@@ -33,7 +33,7 @@ img = None
 def getKeyboardInput():
     global img
     lr, fb, ud, yv = 0, 0, 0, 0
-    speed = 20
+    speed = 50  # Increased from 20 for faster flight
 
     # ZQSD: Movement control (AZERTY keyboard layout)
     # Z: Forward
@@ -84,9 +84,12 @@ def getKeyboardInput():
 
     # F: Capture image
     if kp.getKey("f"):
+        # Stop the drone for a sharp image
+        me.send_rc_control(0, 0, 0, 0)
+        time.sleep(0.2)  # Brief pause for stabilization
         cv2.imwrite(f'capture_{time.time()}.jpg', img)
+        print(f"📸 Image captured: capture_{time.time()}.jpg")
         time.sleep(0.3)
-        print(f"Image captured: capture_{time.time()}.jpg")
 
     # V: Toggle downvision (bottom camera)
     if kp.getKey("v"):
@@ -109,8 +112,9 @@ print("  S     → Backward")
 print("  Q     → Left")
 print("  D     → Right")
 print("\n⬆️  HOOGTE (Arrow Keys):")
-print("  ↑     → Omhoog")
-print("  ↓     → Omlaag")
+print("  ↑     → Omhoog (Up)")
+print("  ↓     → Omlaag (Down)")
+print("  (Use for height control while flying)")
 print("\n🔄 ROTATIE:")
 print("  A     → Draaien links")
 print("  E     → Draaien rechts")
