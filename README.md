@@ -3,9 +3,10 @@
 | Bestand | Wat |
 |---|---|
 | `tello_combined.py` + `KeyPressModule.py` | Handmatige besturing met het toetsenbord (ongewijzigd) |
-| `tello_autonomous.py` | **Hoofdscript**: ontvangt een pad van de Jetson, vliegt het af en meldt plassen |
+| `tello_autonomous.py` | **Hoofdscript**: vliegt een pad (van de Jetson of handmatig ingevuld) en meldt plassen |
+| `manual_input.py` | Console om zonder Jetson coördinaten in te typen |
 | `navigator.py` | Positieschatting (dead reckoning) + waypoints afvliegen met `go x y z speed` |
-| `puddle_detector.py` | Plasdetectie op de onderste camera (downvision) + samenvoegen van detecties |
+| `puddle_detector.py` | Plasdetectie op de onderste camera (drempelmethode of getraind model) + samenvoegen van detecties |
 | `jetson_link.py` | UDP/JSON-communicatie met de Jetson |
 | `jetson_client_example.py` | Voorbeeld voor de **Jetson-kant** (pad sturen, plassen ontvangen, coördinaten terugrekenen) |
 | `sim.py` | Simulator: alles testen zonder drone (`--sim`) |
@@ -43,15 +44,42 @@ in `world_to_drone()` (START_HEADING_DEG) **of** door vóór het opstijgen
 
 ```bash
 pip install -r requirements.txt
+# pas nodig als jullie model klaar is (kies één):
+pip install ultralytics   # DETECTOR_BACKEND = "yolo"
+pip install inference     # DETECTOR_BACKEND = "roboflow"
 ```
 
 ## Gebruik
 
 ```bash
-python tello_autonomous.py --sim                         # testen zonder drone
-python tello_autonomous.py                               # echte drone, wacht op de Jetson
-python tello_autonomous.py --mission mission_example.json  # echte drone, missie uit een bestand
+python tello_autonomous.py --sim                           # testen zonder drone
+python tello_autonomous.py                                 # echte drone: Jetson én handmatige console
+python tello_autonomous.py --waypoints "100,0,80; 100,100,80; 0,0,80"   # pad meegeven, vliegt meteen
+python tello_autonomous.py --mission mission_example.json  # missie uit een bestand, vliegt meteen
+python tello_autonomous.py --record dataset                # camerabeelden opslaan voor Roboflow
 ```
+
+`--speed 20` verandert de snelheid van `--waypoints`, en met `--hover` blijft de drone na het
+laatste punt hangen in plaats van te landen.
+
+### Handmatig coördinaten invullen (zonder Jetson)
+
+Na het opstarten kun je in de terminal commando's typen (`help` toont ze allemaal):
+
+```
+tello> 100 0 80          # waypoint toevoegen: x=100 cm vooruit, y=0, hoogte 80 cm
+tello> 100 100 80        # 1 m vooruit en 1 m naar links
+tello> 0 0 80            # terug boven het startpunt
+tello> list              # controleren   (undo = laatste weg, clear = alles weg)
+tello> start             # opstijgen, afvliegen en landen   (start hover = blijven hangen)
+tello> goto 50 0 100     # vanuit de huidige positie direct naar één punt, blijven hangen
+tello> pos               # waar denkt de drone dat hij is?
+tello> puddles           # gevonden plassen
+tello> land
+```
+
+Elk punt wordt meteen gecontroleerd tegen de geofence. De handmatige console en de Jetson
+gebruiken exact dezelfde vliegcode, dus wat nu handmatig werkt, werkt straks ook via de Jetson.
 
 Op de Jetson (of op dezelfde laptop om te testen):
 
@@ -59,8 +87,8 @@ Op de Jetson (of op dezelfde laptop om te testen):
 python jetson_client_example.py --drone <ip-van-de-laptop>
 ```
 
-Toetsen in het videovenster: **L/P** = landen (missie afbreken), **X** = noodstop (motoren uit,
-de drone valt!), **ESC** = landen en afsluiten.
+Toetsen in het videovenster: **L/P** = landen (missie afbreken), **R** = opnemen aan/uit,
+**X** = noodstop (motoren uit, de drone valt!), **ESC** = landen en afsluiten.
 
 ## Protocol (JSON over UDP, één bericht per pakket)
 
@@ -70,7 +98,7 @@ de drone valt!), **ESC** = landen en afsluiten.
 |---|---|---|
 | `mission` | `id`, `waypoints` (`[{"x","y","z"}, …]` of `[[x,y,z], …]`), optioneel `speed` (10-100 cm/s), `land_at_end` | Opstijgen (als nodig) en de waypoints afvliegen |
 | `abort` | – | Missie afbreken na de huidige stap en landen |
-| `land` / `takeoff` | – | |
+| `land` / `takeoff` | – | `land` breekt ook een lopende missie af |
 | `set_pose` | `x`, `y`, `yaw` (graden, links = positief) | Startpositie/-richting instellen (alleen op de grond) |
 | `get_puddles` | – | Antwoord: `puddle_list` |
 | `reset_puddles` | – | Plassenlijst wissen |
@@ -80,7 +108,7 @@ de drone valt!), **ESC** = landen en afsluiten.
 
 | type | velden |
 |---|---|
-| `puddle` | `id`, `x`, `y` (cm, mission frame), `area_cm2`, `hits`, `mission` |
+| `puddle` | `id`, `x`, `y` (cm, mission frame), `area_cm2`, `hits`, `mission`, `confidence` (alleen bij een model) |
 | `status` | `state`, `battery`, `pos {x,y,z,yaw}`, `mission`, `waypoint_index`, `puddles` (elke seconde) |
 | `ack` | `ref`, … |
 | `waypoint_reached` | `id`, `index`, `pos` |
@@ -110,6 +138,60 @@ Blobs die de beeldrand raken worden genegeerd, omdat hun middelpunt dan niet klo
 pixel omgerekend naar cm. Daarna komt de positie van de drone op het moment van het beeld
 erbij (min `FRAME_LATENCY_S` vertraging). Een plas wordt pas gemeld als hij `MIN_HITS` keer
 gezien is. Detecties binnen `MERGE_RADIUS_CM` worden samengevoegd tot één plas.
+
+## Eigen model (Roboflow, objectdetectie)
+
+Zolang er geen model is, gebruikt het script de drempelmethode (`DETECTOR_BACKEND = "threshold"`).
+Een objectdetectiemodel geeft een **bounding box** per plas. Het script neemt het midden van
+de box als plaspositie en schat de oppervlakte als een ellips binnen de box.
+
+### 1. Beelden verzamelen
+
+Train op beelden van **dezelfde camera, hoogte en vloer** als tijdens de missie. Dat is
+belangrijker dan het aantal beelden.
+
+```bash
+python tello_autonomous.py --record dataset
+```
+
+Dit slaat 2 beelden per seconde van de onderste camera op als PNG, al bijgesneden en in
+grijswaarden (precies wat het model straks te zien krijgt). Opnemen kun je ook aan en uit
+zetten met **R** of `record` in de console. Zo kun je met de console een rondje vliegen
+boven de plassen en tegelijk opnemen. Vlieg op verschillende hoogtes (bv. 50–120 cm),
+met verschillende vormen en groottes van plassen, ander licht, en neem ook beelden **zonder**
+plassen op (vlekken, schaduwen, tape, kabels), zodat het model leert wat géén plas is.
+
+### 2. Roboflow
+
+1. Upload de map `dataset/` naar je Roboflow-project (type **Object Detection**).
+2. Teken boxen rond de plassen, met één klasse, bv. `puddle`. Beelden zonder plas laat je
+   leeg (Roboflow: “mark null”).
+3. Preprocessing: Auto-Orient + Resize (bv. 320×320 of 640×640). Gebruik voorzichtige
+   augmentations (helderheid, kleine rotaties, flip). Grayscale is al zo.
+4. Trainen kan op twee manieren:
+   * **In Roboflow (Roboflow Train)** → `DETECTOR_BACKEND = "roboflow"`,
+     `ROBOFLOW_MODEL_ID = "<project>/<versie>"` en je API-key in `ROBOFLOW_API_KEY` (of
+     als omgevingsvariabele). `pip install inference` downloadt het model één keer.
+     **Doe die eerste start terwijl je internet hebt**: op de Wi-Fi van de Tello is er geen internet.
+     Daarna draait het model lokaal.
+   * **Zelf met Ultralytics**: exporteer de dataset als “YOLOv8”/“YOLO11” en train, bv. in Colab:
+     `yolo detect train data=data.yaml model=yolo11n.pt imgsz=320 epochs=100`.
+     Zet `best.pt` in `models/puddles.pt` → `DETECTOR_BACKEND = "yolo"`, `MODEL_IMGSZ = 320`.
+     Dit werkt volledig offline, en later kun je hetzelfde model ook op de Jetson draaien.
+
+### 3. Testen en afstellen
+
+```bash
+python puddle_detector.py dataset/ --backend yolo      # map met beelden doorlopen
+python tello_autonomous.py --sim                       # (sim tekent eenvoudige plassen)
+```
+
+Instellingen in `config.py`: `MODEL_CONFIDENCE` (hoger = minder valse meldingen),
+`MODEL_CLASSES` (bv. `["puddle"]`), `MIN_HITS` (hoe vaak een plas gezien moet zijn) en
+`REJECT_BORDER_BLOBS` (boxen tegen de beeldrand overslaan, omdat de plas dan half in beeld is).
+Kies een klein model (`n`), want het draait op de laptop-CPU. De detectie probeert tot
+`DETECT_HZ` = 10 keer per seconde te draaien. Een plas moet `MIN_HITS` keer gezien
+worden terwijl hij volledig in beeld is, dus vlieg trager als het model traag is.
 
 ## Kalibreren (belangrijk vóór de eerste echte vlucht)
 

@@ -1,13 +1,18 @@
 """
-Autonomous Tello EDU: follow a path received from the Jetson and report puddles
-seen by the downward camera.
+Autonomous Tello EDU: follow a path (from the Jetson or entered manually) and
+report puddles seen by the downward camera.
 
-    python tello_autonomous.py                    # real drone, wait for Jetson
+    python tello_autonomous.py                    # real drone, Jetson + manual console
+    python tello_autonomous.py --waypoints "100,0,80; 100,100,80; 0,0,80"
     python tello_autonomous.py --mission pad.json # real drone, local mission file
+    python tello_autonomous.py --record dataset   # save downward frames for Roboflow
     python tello_autonomous.py --sim              # simulator, no drone needed
+
+Without a Jetson, type coordinates in the terminal (type 'help'), see manual_input.py.
 
 Keys in the video window:
     L / P  land (aborts the running mission)
+    R      start/stop recording downward frames (dataset)
     X      EMERGENCY: motors off immediately (drone falls!)
     ESC    land and quit
 
@@ -16,10 +21,12 @@ Threads:
     mission   the ONLY thread that sends flight commands to the Tello
     detector  puddle detection on the downward camera
     link      receives Jetson messages (jetson_link.py)
+    console   manual commands typed in the terminal (manual_input.py)
 """
 
 import argparse
 import json
+import os
 import queue
 import threading
 import time
@@ -28,12 +35,13 @@ import cv2
 
 import config as cfg
 from jetson_link import JetsonLink
+from manual_input import ManualConsole, parse_point
 from navigator import MissionAborted, PathFollower, Pose, validate_waypoints
-from puddle_detector import PuddleDetector, PuddleTracker, draw_detections, pixel_to_world
+from puddle_detector import PuddleTracker, create_detector, draw_detections, pixel_to_world
 
 
 class DroneApp:
-    def __init__(self, tello, mission_file=None):
+    def __init__(self, tello, mission_file=None, record_dir=None):
         self.tello = tello
         self.pose = Pose()
         self.abort = threading.Event()
@@ -44,13 +52,17 @@ class DroneApp:
         self.waypoint_index = -1
         self.commands = queue.Queue()
         self.follower = PathFollower(tello, self.pose, self.abort)
-        self.detector = PuddleDetector()
+        self.detector = create_detector()
         self.tracker = PuddleTracker()
         self._vis = None
         self._vis_lock = threading.Lock()
         self._last_cmd_time = time.time()
+        self.record_dir = record_dir or cfg.RECORD_DIR
+        self.recording = record_dir is not None
+        self._last_record = 0.0
+        self._record_count = 0
 
-        self.link = JetsonLink(self.on_jetson_message, cfg.LISTEN_HOST, cfg.LISTEN_PORT,
+        self.link = JetsonLink(self.submit, cfg.LISTEN_HOST, cfg.LISTEN_PORT,
                                cfg.JETSON_HOST, cfg.JETSON_PORT)
         if mission_file:
             with open(mission_file) as f:
@@ -68,13 +80,17 @@ class DroneApp:
         self.mission_thread.start()
         threading.Thread(target=self.detect_loop, daemon=True).start()
 
-    # ------------------------------------------------------- jetson messages
-    def on_jetson_message(self, msg):
-        """Runs in the link thread: never send flight commands from here."""
+    # ------------------------------------------------- jetson / manual input
+    def submit(self, msg):
+        """
+        Entry point for every command, from the Jetson or the manual console.
+        Runs in the caller's thread: never send flight commands from here.
+        """
         t = msg["type"]
-        if t == "abort":
-            print("🛑 Abort from Jetson")
-            self.abort.set()
+        if t in ("abort", "land"):
+            if t == "abort":
+                print("🛑 Abort")
+            self.abort.set()  # stop a running mission after its current step
             self.commands.put({"type": "land"})
         elif t == "ping":
             self.link.send({"type": "pong", "t": msg.get("t")})
@@ -83,7 +99,7 @@ class DroneApp:
         elif t == "reset_puddles":
             self.tracker.reset()
             self.link.send({"type": "ack", "ref": t})
-        elif t in ("mission", "land", "takeoff", "set_pose"):
+        elif t in ("mission", "takeoff", "set_pose"):
             self.commands.put(msg)
         else:
             self.link.send({"type": "error", "ref": t, "error": "unknown message type"})
@@ -219,9 +235,28 @@ class DroneApp:
                 self.process_frame(frame, t_start)
             time.sleep(max(0.0, period - (time.time() - t_start)))
 
+    def toggle_recording(self):
+        self.recording = not self.recording
+        print(f"🎥 Opnemen {'AAN -> ' + self.record_dir if self.recording else 'UIT'}")
+
+    def record_frame(self, gray):
+        """Save downward camera frames as training images for Roboflow."""
+        now = time.time()
+        if now - self._last_record < 1.0 / cfg.RECORD_HZ:
+            return
+        if cfg.RECORD_ONLY_AIRBORNE and not self.airborne:
+            return
+        self._last_record = now
+        os.makedirs(self.record_dir, exist_ok=True)
+        path = os.path.join(self.record_dir, f"down_{now:.2f}.png")
+        cv2.imwrite(path, gray)
+        self._record_count += 1
+
     def process_frame(self, frame, t_frame):
         pose = self.pose.get(t_frame - cfg.FRAME_LATENCY_S)
         dets, gray, _ = self.detector.detect(frame)
+        if self.recording:
+            self.record_frame(gray)
         height = self.read_height(default=pose[2])
         active = self.airborne and self.state == "flying" and height >= cfg.MIN_DETECT_HEIGHT
         if active:
@@ -249,7 +284,8 @@ class DroneApp:
                     x, y, z, _ = self.pose.get()
                     lines = [f"State: {self.state}  Battery: {self.tello.get_battery()}%",
                              f"Pos: x={x:.0f} y={y:.0f} z={z:.0f} cm",
-                             f"Puddles: {len(self.tracker.confirmed())}"]
+                             f"Puddles: {len(self.tracker.confirmed())}"
+                             + (f"  REC {self._record_count}" if self.recording else "")]
                     for i, text in enumerate(lines):
                         cv2.putText(vis, text, (10, 25 + 25 * i),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
@@ -259,8 +295,9 @@ class DroneApp:
                     print("Exiting...")
                     break
                 if key in (ord("l"), ord("p")):
-                    self.abort.set()
-                    self.commands.put({"type": "land"})
+                    self.submit({"type": "land"})
+                if key == ord("r"):
+                    self.toggle_recording()
                 if key == ord("x"):
                     print("🚨 EMERGENCY STOP")
                     self.tello.emergency()
@@ -295,6 +332,11 @@ def main():
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--sim", action="store_true", help="use the simulator instead of a drone")
     parser.add_argument("--mission", help="JSON file with a mission (same format as from the Jetson)")
+    parser.add_argument("--waypoints", help='manual path in cm, e.g. "100,0,80; 100,100,80; 0,0,80"')
+    parser.add_argument("--speed", type=int, default=cfg.DEFAULT_SPEED, help="cm/s for --waypoints")
+    parser.add_argument("--hover", action="store_true", help="don't land after --waypoints")
+    parser.add_argument("--record", metavar="DIR", help="save downward frames to DIR (dataset)")
+    parser.add_argument("--no-console", action="store_true", help="disable the manual terminal console")
     args = parser.parse_args()
 
     if args.sim:
@@ -305,8 +347,15 @@ def main():
         Tello.RESPONSE_TIMEOUT = cfg.RESPONSE_TIMEOUT
         tello = Tello()
 
-    app = DroneApp(tello, args.mission)
+    app = DroneApp(tello, args.mission, args.record)
+    if args.waypoints:
+        points = [p for p in args.waypoints.split(";") if p.strip()]
+        waypoints = validate_waypoints([parse_point([p]) for p in points])
+        app.submit({"type": "mission", "id": "cli", "speed": args.speed,
+                    "land_at_end": not args.hover, "waypoints": waypoints})
     app.start()
+    if not args.no_console:
+        ManualConsole(app)
     app.run_ui()
 
 

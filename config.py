@@ -55,8 +55,21 @@ FRAME_LATENCY_S = 0.2       # video delay; puddle position uses pose at t - late
 # ---------------------------------------------------------------------------
 # Puddle detection
 # ---------------------------------------------------------------------------
-DETECT_HZ = 5               # detection runs this many times per second
+DETECT_HZ = 10              # detection runs (max) this many times per second
 MIN_DETECT_HEIGHT = 30      # cm, no detection below this height (takeoff/landing)
+DETECTOR_BACKEND = "threshold"  # "threshold" (no training), "yolo" or "roboflow"
+
+# Trained object detection model (DETECTOR_BACKEND = "yolo" or "roboflow")
+MODEL_PATH = "models/puddles.pt"      # yolo: .pt or .onnx from Ultralytics
+ROBOFLOW_MODEL_ID = "puddles/1"       # roboflow: "<project>/<version>"
+ROBOFLOW_API_KEY = None               # or set the ROBOFLOW_API_KEY environment variable
+MODEL_CONFIDENCE = 0.5                # ignore boxes below this confidence
+MODEL_IMGSZ = 320                     # yolo input size (same as used for training)
+MODEL_CLASSES = None                  # e.g. ["puddle"]; None = accept every class
+MODEL_BORDER_PX = 2                   # box this close to the edge = cut-off puddle
+
+# Settings below are for the "threshold" backend (MIN_AREA_PX and
+# REJECT_BORDER_BLOBS are used by every backend)
 PUDDLE_MODE = "dark"        # "dark", "bright" (reflections) or "both"
 BLUR_KERNEL = 7             # Gaussian blur kernel (odd number)
 DARK_OFFSET = 30            # pixel must be this much darker than the floor median
@@ -70,3 +83,10 @@ REJECT_BORDER_BLOBS = True  # skip puddles cut off by the image edge (wrong cent
 # Tracking: merge repeated detections of the same puddle
 MERGE_RADIUS_CM = 40        # detections closer than this belong to the same puddle
 MIN_HITS = 3                # seen this many times before reported to the Jetson
+
+# ---------------------------------------------------------------------------
+# Recording downward frames for the dataset (--record DIR or key R / 'record')
+# ---------------------------------------------------------------------------
+RECORD_DIR = "dataset"      # default folder when recording is toggled on
+RECORD_HZ = 2               # images per second (don't make near-identical images)
+RECORD_ONLY_AIRBORNE = False  # True: only save while flying
