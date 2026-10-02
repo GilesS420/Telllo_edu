@@ -1,0 +1,4 @@
+djitellopy>=2.5
+opencv-python
+numpy
+keyboard  # only for the manual tello_combined.py
