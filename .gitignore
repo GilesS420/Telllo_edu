@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+capture_*.jpg
+venv/
+.venv/
+dataset/

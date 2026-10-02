@@ -1,0 +1,8 @@
+djitellopy>=2.5
+opencv-python
+numpy
+keyboard  # only for the manual tello_combined.py
+
+# Puddle model (only one needed, see README "Eigen model"):
+# ultralytics   # DETECTOR_BACKEND = "yolo"
+# inference     # DETECTOR_BACKEND = "roboflow"
