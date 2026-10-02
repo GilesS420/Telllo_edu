@@ -33,6 +33,31 @@ RESPONSE_TIMEOUT = 20       # s, djitellopy wait time for 'ok' (long go commands
 KEEPALIVE_INTERVAL = 5      # s, Tello lands by itself after 15 s without commands
 LAND_AT_END = True          # land after the last waypoint (mission can override)
 
+# Navigation mode (the GUI can change it per mission)
+#   "go": straight 'go' moves between waypoints (the drone stops at every point);
+#         drift and rotation are corrected before each move
+#   "rc": smooth flight with continuous steering (no stops), needs visual odometry
+NAV_MODE = "go"
+FINE_POSITION = "auto"      # precise positioning at waypoints: "off", "last", "all" or
+                            # "auto" (= "all" in go mode, "last" in rc mode)
+FINE_TOL_CM = 8             # precise positioning: stop when closer than this
+FINE_TIMEOUT_S = 4          # give up precise positioning after this time
+
+# Heading hold: keep the nose in the start direction (IMU yaw)
+YAW_HOLD = True
+YAW_TOL_DEG = 4             # 'go' mode: rotate back when the heading is off by more than this
+YAW_SIGN = -1               # Tello yaw is clockwise-positive, mission yaw counter-clockwise
+                            # CHECK: rotate the drone left by hand -> GUI yaw must go UP
+
+# rc-mode controller
+RC_CMS_PER_UNIT = 1.0       # approx. speed (cm/s) per rc unit (rc goes from -100 to 100)
+RC_LOOKAHEAD_CM = 25        # follow a point this far ahead on the path (pure pursuit)
+RC_PASS_CM = 12             # waypoint counts as passed within this distance
+RC_GAIN = 1.2               # 1/s, speed towards the path per cm of error
+RC_YAW_GAIN = 1.5           # rc yaw units per degree heading error
+RC_HZ = 15                  # control loop rate
+RC_MIN_UNITS = 8            # smallest rc value that still moves the drone
+
 # Waypoints outside this box are rejected (safety)
 GEOFENCE = {
     "x": (-600, 600),
@@ -51,6 +76,20 @@ CAM_FORWARD_SIGN = 1        # 1: top of image = drone forward, -1: flipped
 CAM_LEFT_SIGN = 1           # 1: left of image = drone left,   -1: flipped
 CAM_OFFSET_CM = (0.0, 0.0)  # camera position relative to drone centre (fwd, left)
 FRAME_LATENCY_S = 0.2       # video delay; puddle position uses pose at t - latency
+
+# ---------------------------------------------------------------------------
+# Visual odometry: measure the real movement from the downward camera
+# (shift of the floor between frames). Corrects drift while hovering and wind.
+# Needs some texture on the floor; falls back to the commanded moves if not.
+# ---------------------------------------------------------------------------
+VO_ENABLED = True
+VO_HZ = 20                  # frames per second used for odometry
+VO_MIN_RESPONSE = 0.08      # phase correlation quality, lower = no texture/blur
+VO_MIN_HEIGHT = 20          # cm, no odometry below this height
+VO_MAX_YAW_STEP = 1.5       # deg turned since the keyframe; more = take a new keyframe
+VO_KEY_SHIFT_PX = 20        # new keyframe after this much image shift
+VO_KEY_QUALITY = 0.3        # ... or when the match quality drops below this
+VO_LOST_S = 0.7             # s without good frames = odometry lost
 
 # ---------------------------------------------------------------------------
 # Puddle detection
