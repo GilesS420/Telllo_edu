@@ -10,14 +10,16 @@ Graphical mission control for the Tello EDU.
 * Start mission / go to point / take off / land / emergency stop
 * Live downward camera image with detections, puddle list and log
 
-Uses the same DroneApp as tello_autonomous.py, so Jetson missions still work
-while the GUI is open (they are drawn in the grid too). Everything runs
-offline (tkinter + matplotlib), so it also works on the Tello Wi-Fi.
+Uses DroneApp (drone/app.py), so Jetson missions still work while the GUI is
+open (they are drawn in the grid too). Everything runs offline (tkinter +
+matplotlib), so it also works on the Tello Wi-Fi. Missions are saved/loaded in
+json_flights/.
 """
 
 import argparse
 import base64
 import json
+import os
 import queue
 import sys
 import tkinter as tk
@@ -31,11 +33,12 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg  # noqa: E402
 from matplotlib.figure import Figure  # noqa: E402
 from matplotlib.ticker import NullFormatter, ScalarFormatter  # noqa: E402
 
-import config as cfg  # noqa: E402
-from navigator import validate_waypoints  # noqa: E402
-from tello_autonomous import DroneApp  # noqa: E402
+from drone import config as cfg  # noqa: E402
+from drone.navigator import validate_waypoints  # noqa: E402
+from drone.app import DroneApp  # noqa: E402
 
 REFRESH_MS = 200
+FLIGHTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "json_flights")
 
 # Viewing angles (mission frame: x = forward, y = left, z = up)
 VIEWS = {
@@ -465,14 +468,14 @@ class TelloGUI:
             self._refresh_tree()
 
     def save_mission(self):
-        path = filedialog.asksaveasfilename(defaultextension=".json",
+        path = filedialog.asksaveasfilename(defaultextension=".json", initialdir=FLIGHTS_DIR,
                                             filetypes=[("Missie", "*.json")])
         if path:
             with open(path, "w") as f:
                 json.dump(self._mission(self.waypoints, self.land_at_end.get()), f, indent=2)
 
     def load_mission(self):
-        path = filedialog.askopenfilename(filetypes=[("Missie", "*.json")])
+        path = filedialog.askopenfilename(initialdir=FLIGHTS_DIR, filetypes=[("Missie", "*.json")])
         if not path:
             return
         try:
@@ -547,7 +550,7 @@ def main():
 
     root = tk.Tk()
     if args.sim:
-        from sim import FakeTello
+        from drone.sim import FakeTello
         tello = FakeTello()
     else:
         from djitellopy import Tello

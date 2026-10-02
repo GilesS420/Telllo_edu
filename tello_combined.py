@@ -1,6 +1,6 @@
 # Import necessary libraries
 from djitellopy import Tello
-import KeyPressModule as kp
+from drone import keypress as kp
 import cv2
 import time
 import numpy as np
