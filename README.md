@@ -3,6 +3,7 @@
 | Bestand | Wat |
 |---|---|
 | `tello_combined.py` + `KeyPressModule.py` | Handmatige besturing met het toetsenbord (ongewijzigd) |
+| `tello_gui.py` | **Grafische besturing**: coördinaten invullen, 3D-rooster met pad, drone en plassen |
 | `tello_autonomous.py` | **Hoofdscript**: vliegt een pad (van de Jetson of handmatig ingevuld) en meldt plassen |
 | `manual_input.py` | Console om zonder Jetson coördinaten in te typen |
 | `navigator.py` | Positieschatting (dead reckoning) + waypoints afvliegen met `go x y z speed` |
@@ -62,7 +63,30 @@ python tello_autonomous.py --record dataset                # camerabeelden opsla
 `--speed 20` verandert de snelheid van `--waypoints`, en met `--hover` blijft de drone na het
 laatste punt hangen in plaats van te landen.
 
-### Handmatig coördinaten invullen (zonder Jetson)
+### Grafische besturing (aanrader)
+
+```bash
+python tello_gui.py --sim     # eerst proberen zonder drone
+python tello_gui.py           # echte drone (laptop op de Wi-Fi van de Tello)
+```
+
+![Tello GUI](docs/gui.png)
+
+* **Waypoints**: vul x, y en z in (cm) en druk op Enter of *Toevoegen*. Klik een punt in de
+  lijst aan om het aan te passen (*Bijwerken*), te verplaatsen (▲▼) of te verwijderen.
+  *Huidige positie* neemt de positie van de drone over. Een pad kan je *Opslaan*/*Laden* als
+  JSON, in hetzelfde formaat als `mission_example.json`.
+* **3D-rooster**: oranje = ingevoerd pad (genummerde punten met coördinaten), blauw = actieve
+  missie (ook missies van de Jetson), groen = bereikte punten, rood = gevlogen spoor, rode X =
+  drone (met stippellijn naar de vloer), cyaan = gevonden plassen. Sleep met de muis om te
+  draaien of kies *3D*, *Boven* of *Zijkant*.
+* **Vliegen**: *Start missie*, *Ga naar geselecteerd punt* (blijft daarna hangen),
+  *Opstijgen*, *Landen* (toets L) en **NOODSTOP** (toets X, motoren uit, de drone valt!).
+* Onderaan: het beeld van de onderste camera met detecties, de gevonden plassen en de log.
+
+De Jetson-verbinding blijft actief terwijl de GUI open is.
+
+### Handmatig coördinaten invullen in de terminal (zonder Jetson)
 
 Na het opstarten kun je in de terminal commando's typen (`help` toont ze allemaal):
 

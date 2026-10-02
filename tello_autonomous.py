@@ -49,7 +49,9 @@ class DroneApp:
         self.state = "idle"          # idle, taking_off, flying, landing, error
         self.airborne = False
         self.mission_id = None
+        self.current_waypoints = []  # waypoints of the running/last mission (for the GUI)
         self.waypoint_index = -1
+        self.waypoints_reached = 0   # reached waypoints of the current mission (for the GUI)
         self.commands = queue.Queue()
         self.follower = PathFollower(tello, self.pose, self.abort)
         self.detector = create_detector()
@@ -185,6 +187,8 @@ class DroneApp:
         speed = msg.get("speed", cfg.DEFAULT_SPEED)
         land_at_end = msg.get("land_at_end", cfg.LAND_AT_END)
         self.mission_id = msg.get("id")
+        self.current_waypoints = waypoints
+        self.waypoints_reached = 0
         self.abort.clear()
         print(f"🗺️  Mission {self.mission_id}: {len(waypoints)} waypoints @ {speed} cm/s")
         self.link.send({"type": "ack", "ref": "mission", "id": self.mission_id,
@@ -193,6 +197,7 @@ class DroneApp:
 
         def on_waypoint(i, wp):
             self.waypoint_index = i
+            self.waypoints_reached = i + 1
             x, y, z, _ = self.pose.get()
             print(f"📍 Waypoint {i + 1}/{len(waypoints)} bereikt ({x:.0f}, {y:.0f}, {z:.0f})")
             self.link.send({"type": "waypoint_reached", "id": self.mission_id, "index": i,
@@ -234,6 +239,14 @@ class DroneApp:
             if frame is not None:
                 self.process_frame(frame, t_start)
             time.sleep(max(0.0, period - (time.time() - t_start)))
+
+    def emergency_stop(self):
+        """Motors off immediately. The drone falls!"""
+        print("🚨 EMERGENCY STOP")
+        self.abort.set()
+        self.tello.emergency()
+        self.airborne = False
+        self.state = "idle"
 
     def toggle_recording(self):
         self.recording = not self.recording
@@ -299,9 +312,7 @@ class DroneApp:
                 if key == ord("r"):
                     self.toggle_recording()
                 if key == ord("x"):
-                    print("🚨 EMERGENCY STOP")
-                    self.tello.emergency()
-                    self.airborne = False
+                    self.emergency_stop()
                 if time.time() - last_status > cfg.STATUS_INTERVAL:
                     self.send_status()
                     last_status = time.time()
@@ -323,7 +334,10 @@ class DroneApp:
         except Exception:
             pass
         self.link.close()
-        cv2.destroyAllWindows()
+        try:
+            cv2.destroyAllWindows()
+        except cv2.error:
+            pass
         print("Drone landed and disconnected")
 
 
