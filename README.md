@@ -165,10 +165,14 @@ modus.
 
 **Resultaat in de simulator** (zelfde parcours, met wind en draaien):
 
-| Modus | Gem. fout per waypoint | Max. fout |
-|---|---|---|
-| Vroeger (alleen commando's) | 37–48 cm | 48–85 cm |
-| Stap + odometrie + richting vasthouden | 7–16 cm | 11–24 cm |
+| Modus | Gem. fout per waypoint | Max. fout | Duur |
+|---|---|---|---|
+| Vroeger (alleen commando's) | 37–48 cm | 48–85 cm | 22 s |
+| Stap + odometrie + richting vasthouden | 7–16 cm | 11–24 cm | 29–43 s |
+| Vloeiend (rc) + odometrie | 7–11 cm | 10–17 cm | 21–22 s |
+
+In het echt hangt dit af van de vloer (textuur) en van een goede kalibratie van de camera
+(zie [Kalibreren](#kalibreren-belangrijk-vóór-de-eerste-echte-vlucht)).
 
 **Veiligheid**: na elke beweging wordt de gemeten verplaatsing vergeleken met het commando.
 Klopt de richting niet (bv. een verkeerde `CAM_FORWARD_SIGN`), dan wordt de odometrie meteen
