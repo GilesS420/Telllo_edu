@@ -6,7 +6,8 @@ tello_combined.py     ← live vliegen met het toetsenbord (ZQSD), handig om te 
 drone/
     app.py            kern: missies afvliegen, plassen detecteren, Jetson-koppeling
     config.py         alle instellingen (netwerk, snelheid, geofence, camera, detectie)
-    navigator.py      positieschatting (dead reckoning) + waypoints afvliegen met `go x y z`
+    navigator.py      positie + waypoints afvliegen (stap- of vloeiende modus)
+    odometry.py       meet de echte beweging: camera (visuele odometrie), kompas, hoogte
     puddle_detector.py  plasdetectie (drempelmethode of getraind model) + samenvoegen
     jetson_link.py    UDP/JSON-communicatie met de Jetson
     sim.py            simulator: alles testen zonder drone (`--sim`)
@@ -79,6 +80,9 @@ python tello_combined.py              # live vliegen met het toetsenbord
   missie (ook missies van de Jetson), groen = bereikte punten, rood = gevlogen spoor, rode X =
   drone (met stippellijn naar de vloer), cyaan = gevonden plassen. Sleep met de muis om te
   draaien of kies *3D*, *Boven* of *Zijkant*.
+* **Missie**: *Vliegmodus* (stap of vloeiend) en *Nauwkeurig positioneren*, zie
+  [Nauwkeurig vliegen](#nauwkeurig-vliegen). In de status zie je de *Richting* en of de
+  *Odometrie* de vloer meet. Het rode streepje aan de drone in het rooster is zijn neus.
 * **Vliegen**: *Start missie*, *Ga naar geselecteerd punt* (blijft daarna hangen),
   *Opstijgen*, *Landen* (toets L) en **NOODSTOP** (toets X, motoren uit, de drone valt!).
 * Onderaan: het beeld van de onderste camera met detecties, de gevonden plassen, de log en
@@ -93,7 +97,7 @@ gewoon uitgevoerd en in het rooster getekend.
 
 | type | velden | betekenis |
 |---|---|---|
-| `mission` | `id`, `waypoints` (`[{"x","y","z"}, …]` of `[[x,y,z], …]`), optioneel `speed` (10-100 cm/s), `land_at_end` | Opstijgen (als nodig) en de waypoints afvliegen |
+| `mission` | `id`, `waypoints` (`[{"x","y","z"}, …]` of `[[x,y,z], …]`), optioneel `speed` (10-100 cm/s), `land_at_end`, `nav_mode` (`"go"`/`"rc"`), `fine` (`"auto"`/`"all"`/`"last"`/`"off"`) | Opstijgen (als nodig) en de waypoints afvliegen |
 | `abort` | – | Missie afbreken na de huidige stap en landen |
 | `land` / `takeoff` | – | `land` breekt ook een lopende missie af |
 | `set_pose` | `x`, `y`, `yaw` (graden, links = positief) | Startpositie/-richting instellen (alleen op de grond) |
@@ -106,7 +110,7 @@ gewoon uitgevoerd en in het rooster getekend.
 | type | velden |
 |---|---|
 | `puddle` | `id`, `x`, `y` (cm, mission frame), `area_cm2`, `hits`, `mission`, `confidence` (alleen bij een model) |
-| `status` | `state`, `battery`, `pos {x,y,z,yaw}`, `mission`, `waypoint_index`, `puddles` (elke seconde) |
+| `status` | `state`, `battery`, `pos {x,y,z,yaw}`, `odometry` (true/false), `mission`, `waypoint_index`, `puddles` (elke seconde) |
 | `ack` | `ref`, … |
 | `waypoint_reached` | `id`, `index`, `pos` |
 | `mission_done` / `mission_aborted` | `id`, `puddles` (volledige lijst) |
@@ -117,12 +121,7 @@ UDP kan pakketten verliezen: gebruik `mission_done` / `get_puddles` als de defin
 
 ## Hoe het werkt
 
-**Vliegen.** De Tello heeft geen GPS. `go x y z speed` gebruikt de optische-flowsensor
-onderaan en is redelijk nauwkeurig. `navigator.py` telt alle bewegingen op tot een
-positieschatting en splitst lange stukken op in stappen van max. `MAX_STEP_CM` (standaard 1 m).
-Daardoor zijn de plasposities nauwkeuriger en reageert een `abort` sneller. De Tello kan
-geen beweging maken waarbij x, y én z allemaal kleiner dan 20 cm zijn. Zo'n restfout gaat
-niet verloren: het volgende waypoint corrigeert ervoor. Vóór het opstijgen worden alle
+**Vliegen.** Zie [Nauwkeurig vliegen](#nauwkeurig-vliegen). Vóór het opstijgen worden alle
 waypoints gecontroleerd tegen een geofence (`GEOFENCE` in `drone/config.py`).
 
 **Plassen.** Op het zwart-witbeeld van de onderste camera is de vloer het grootste oppervlak,
@@ -135,6 +134,47 @@ Blobs die de beeldrand raken worden genegeerd, omdat hun middelpunt dan niet klo
 pixel omgerekend naar cm. Daarna komt de positie van de drone op het moment van het beeld
 erbij (min `FRAME_LATENCY_S` vertraging). Een plas wordt pas gemeld als hij `MIN_HITS` keer
 gezien is. Detecties binnen `MERGE_RADIUS_CM` worden samengevoegd tot één plas.
+
+## Nauwkeurig vliegen
+
+De Tello heeft geen GPS. Vroeger werd de positie enkel *geschat* door alle commando's op te
+tellen. Als de drone tussen twee punten stilhing en afdreef, of door wind draaide, wist de
+code dat niet. Nu wordt de echte beweging gemeten (`drone/odometry.py`):
+
+* **Visuele odometrie**: de onderste camera ziet de vloer. De verschuiving van de vloer
+  tussen het beeld en een referentiebeeld, maal de grootte van een pixel op de grond (uit de
+  hoogte en de beeldhoek), geeft de echte verplaatsing. Ook afdrijven tijdens het stilhangen
+  wordt zo gemeten. Werkt het best op een vloer met wat textuur (tegels, hout, tapijt,
+  vlekken). Op een egale, glanzende vloer of bij wazige beelden is de odometrie "kwijt" en
+  wordt er gerekend met de commando's zoals vroeger. De GUI toont dat bij *Odometrie*.
+* **Richting vasthouden**: het kompas (IMU) van de Tello meet de richting. Draait de drone
+  weg van de startrichting, dan draait hij terug.
+* **Hoogte** komt uit de afstandssensor onder de drone.
+
+**Vliegmodi** (in de GUI bij *Vliegmodus*):
+
+| Modus | Hoe | Voor |
+|---|---|---|
+| **Stap** (`go`) | Eén `go`-beweging per punt, berekend vanaf de *gemeten* positie. Afdrijven wordt dus bij de volgende beweging rechtgezet. | Betrouwbaar, werkt ook zonder odometrie. De drone stopt kort bij elk punt. |
+| **Vloeiend** (`rc`) | De drone wordt 15× per seconde bijgestuurd langs het pad, zonder te stoppen. Wind wordt meteen gecompenseerd. | Vloeiend en nauwkeurig, maar heeft werkende odometrie nodig. Het eerste punt gaat in stap-modus (om de odometrie te controleren). Valt de odometrie weg, dan gaat hij verder in stap-modus. |
+
+**Nauwkeurig positioneren**: de Tello kan geen `go`-beweging kleiner dan 20 cm maken. Met
+kleine rc-bijsturingen zet de drone zich daarom tot op `FINE_TOL_CM` (8 cm) op het punt.
+*Automatisch* doet dat op elk punt in de stap-modus en op het laatste punt in de vloeiende
+modus.
+
+**Resultaat in de simulator** (zelfde parcours, met wind en draaien):
+
+| Modus | Gem. fout per waypoint | Max. fout |
+|---|---|---|
+| Vroeger (alleen commando's) | 37–48 cm | 48–85 cm |
+| Stap + odometrie + richting vasthouden | 7–16 cm | 11–24 cm |
+
+**Veiligheid**: na elke beweging wordt de gemeten verplaatsing vergeleken met het commando.
+Klopt de richting niet (bv. een verkeerde `CAM_FORWARD_SIGN`), dan wordt de odometrie meteen
+uitgeschakeld en vliegt de drone verder zoals vroeger. In de vloeiende modus stopt de drone
+ook als hij verder van het punt raakt in plaats van dichter. Draait de richtingcorrectie de
+verkeerde kant op, dan schakelt die zichzelf uit (zie `YAW_SIGN`).
 
 ## Eigen model (Roboflow, objectdetectie)
 
@@ -204,7 +244,13 @@ worden terwijl hij volledig in beeld is, dus vlieg trager als het model traag is
 4. **Detectie afstellen.** Maak foto's/video van echte plassen op jullie vloer en run
    `python -m drone.puddle_detector foto.jpg`: je ziet de gevonden plassen en het masker. Pas
    `DARK_OFFSET`, `MIN_AREA_PX`, `MIN_SOLIDITY` en `PUDDLE_MODE` aan tot het klopt.
-5. **Grote plassen.** De camera ziet op 80 cm hoogte maar ongeveer 90 × 70 cm (met 60° beeldhoek).
+5. **Richting (`YAW_SIGN`).** Zet de drone aan, open de GUI en draai de drone met de hand naar
+   **links**: de *Richting* in de status moet **stijgen**. Daalt hij, zet dan `YAW_SIGN = 1`.
+6. **Odometrie.** Vlieg met de stap-modus een punt 1 m vooruit. Klopt de camera-oriëntatie
+   (stap 3) niet, dan zie je in de log "odometrie UITGESCHAKELD". Klopt de afstand niet
+   (bv. de positie zegt 80 cm terwijl hij 1 m vloog), dan staat `CAM_HFOV_DEG` (stap 2)
+   verkeerd: de odometrie gebruikt dezelfde beeldhoek om pixels naar cm om te rekenen.
+7. **Grote plassen.** De camera ziet op 80 cm hoogte maar ongeveer 90 × 70 cm (met 60° beeldhoek).
    Plassen die bijna zo groot zijn als het beeld raken bijna altijd de rand en worden dan niet
    gemeld. Vlieg hoger of zet `REJECT_BORDER_BLOBS = False` (dan minder nauwkeurige middelpunten).
 

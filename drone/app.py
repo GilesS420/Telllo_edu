@@ -5,6 +5,7 @@ Jetson) and reports puddles seen by the downward camera. Started by tello_gui.py
 Threads:
     mission   the ONLY thread that sends flight commands to the Tello
     detector  puddle detection on the downward camera
+    odometry  heading, height and visual odometry -> pose (odometry.py)
     status    status messages to the Jetson
     link      receives Jetson messages (jetson_link.py)
 """
@@ -19,6 +20,7 @@ import cv2
 from . import config as cfg
 from .jetson_link import JetsonLink
 from .navigator import MissionAborted, PathFollower, Pose, validate_waypoints
+from .odometry import Odometry
 from .puddle_detector import PuddleTracker, create_detector, draw_detections, pixel_to_world
 
 
@@ -60,6 +62,8 @@ class DroneApp:
         self.mission_thread = threading.Thread(target=self.mission_loop, daemon=True)
         self.mission_thread.start()
         threading.Thread(target=self.detect_loop, daemon=True).start()
+        self.odometry = Odometry(self.tello, self.pose, self.frame_reader, self.detector,
+                                 lambda: self.airborne)
         threading.Thread(target=self.status_loop, daemon=True).start()
 
     # ------------------------------------------------- jetson / manual input
@@ -94,7 +98,8 @@ class DroneApp:
             battery = None
         self.link.send({
             "type": "status", "state": self.state, "battery": battery,
-            "pos": {"x": round(x, 1), "y": round(y, 1), "z": round(z, 1), "yaw": yaw},
+            "pos": {"x": round(x, 1), "y": round(y, 1), "z": round(z, 1), "yaw": round(yaw, 1)},
+            "odometry": self.pose.measured,
             "mission": self.mission_id, "waypoint_index": self.waypoint_index,
             "puddles": len(self.tracker.confirmed()),
         })
@@ -146,8 +151,12 @@ class DroneApp:
             raise RuntimeError(f"battery too low ({battery}% < {cfg.MIN_BATTERY}%)")
         self.state = "taking_off"
         print("🚁 Opstijgen...")
-        self.tello.takeoff()
-        self.airborne = True
+        self.airborne = True  # odometry measures the drift during takeoff too
+        try:
+            self.tello.takeoff()
+        except Exception:
+            self.airborne = False
+            raise
         height = self.read_height(default=80)
         self.pose.set(z=height)
         self.state = "flying"
@@ -189,7 +198,8 @@ class DroneApp:
                             "pos": {"x": round(x, 1), "y": round(y, 1), "z": round(z, 1)}})
 
         try:
-            self.follower.fly(waypoints, speed, on_waypoint)
+            self.follower.fly(waypoints, speed, on_waypoint,
+                              mode=msg.get("nav_mode"), fine=msg.get("fine"))
         except MissionAborted:
             print("🛑 Mission aborted")
             self.link.send({"type": "mission_aborted", "id": self.mission_id,
