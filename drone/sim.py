@@ -4,7 +4,7 @@ FakeTello: a tiny simulator with the same methods we use from djitellopy.
 It renders a synthetic downward camera image of a floor with puddles at known
 positions, so the whole chain (Jetson path -> flight -> detection -> puddle
 coordinates back to the Jetson) can be tested on a laptop without a drone:
-    python tello_autonomous.py --sim
+    python tello_gui.py --sim
 """
 
 import math
@@ -13,7 +13,7 @@ import time
 
 import numpy as np
 
-import config as cfg
+from . import config as cfg
 
 # Puddles in the simulated world: (x, y, radius_x, radius_y) in cm, mission frame
 SIM_PUDDLES = [(150, 0, 25, 15), (200, 120, 20, 20), (50, 150, 20, 12)]

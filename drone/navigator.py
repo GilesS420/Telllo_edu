@@ -12,7 +12,7 @@ import math
 import threading
 import time
 
-import config as cfg
+from . import config as cfg
 
 
 class MissionAborted(Exception):
