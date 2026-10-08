@@ -14,8 +14,10 @@ Threads:
 import math
 import os
 import queue
+import sys
 import threading
 import time
+import traceback
 
 import cv2
 
@@ -387,7 +389,13 @@ class DroneApp:
             t_start = time.time()
             frame = self.frame_reader.frame
             if frame is not None:
-                self.process_frame(frame, t_start)
+                try:
+                    self.process_frame(frame, t_start)
+                except Exception as e:   # never let the camera view freeze
+                    if str(e) != getattr(self, "_detect_error", None):
+                        self._detect_error = str(e)
+                        print(f"⚠️  Fout bij het verwerken van het camerabeeld: {e!r}")
+                        traceback.print_exc(file=sys.stdout)
             time.sleep(max(0.0, period - (time.time() - t_start)))
 
     def emergency_stop(self):

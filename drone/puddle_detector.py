@@ -49,6 +49,8 @@ class DownCamDetector:
     def __init__(self):
         self.crop = cfg.DOWNCAM_CROP
         self._crop_samples = []
+        self._crop_shape = None        # image size the auto crop belongs to
+        self._crop_lock = threading.Lock()  # used by the detector and odometry threads
 
     # -- image preparation --------------------------------------------------
     def to_gray(self, frame):
@@ -59,20 +61,32 @@ class DownCamDetector:
 
     def _update_auto_crop(self, gray):
         """The bottom camera image may sit inside black borders; find its box once."""
-        if self.crop is not None or not cfg.AUTO_CROP:
+        if cfg.DOWNCAM_CROP is not None or not cfg.AUTO_CROP:
             return
-        self._crop_samples.append(gray)
-        if len(self._crop_samples) < 10:
-            return
-        mx = np.max(np.stack(self._crop_samples), axis=0)
-        self._crop_samples = []
+        with self._crop_lock:
+            if gray.shape != self._crop_shape:
+                # first frame, or the video changed size (switching between the front
+                # and bottom camera): find the crop again for this size
+                self._crop_shape = gray.shape
+                self.crop = None
+                self._crop_samples = []
+            if self.crop is not None:
+                return
+            self._crop_samples.append(gray)
+            if len(self._crop_samples) < 10:
+                return
+            mx = np.max(np.stack(self._crop_samples), axis=0)
+            self._crop_samples = []
+            self._set_crop(mx, gray.shape)
+
+    def _set_crop(self, mx, shape):
         rows = np.where(mx.max(axis=1) > 10)[0]
         cols = np.where(mx.max(axis=0) > 10)[0]
         if len(rows) == 0 or len(cols) == 0:
             return
         x, y = int(cols[0]), int(rows[0])
         w, h = int(cols[-1] - x + 1), int(rows[-1] - y + 1)
-        H, W = gray.shape
+        H, W = shape
         if w * h < 0.9 * W * H:
             print(f"🔍 Auto crop of downward image: x={x} y={y} w={w} h={h}")
             self.crop = (x, y, w, h)
