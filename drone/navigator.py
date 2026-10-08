@@ -229,7 +229,7 @@ class PathFollower:
         mode = mode or cfg.NAV_MODE
         fine = fine or cfg.FINE_POSITION
         if fine == "auto":
-            fine = "all" if mode == "go" else "last"
+            fine = "last"
         x, y, z, _ = self.pose.get()
         prev = (x, y, z)
         if mode == "rc" and not self.pose.vo_validated:
@@ -353,11 +353,20 @@ class PathFollower:
                 print("⚠️  Drone gaat van het punt weg: vloeiend vliegen gestopt en "
                       "odometrie uitgeschakeld")
                 raise OdometryLost()
-            # aim point: closest point on the path + lookahead
+            # aim point: closest point on the path + lookahead. Within PATH_TOL_CM
+            # beside the path the drone flies parallel to it instead of steering
+            # back: every small correction bends the path, which looks worse
+            # than a steady few cm offset.
             if length > 0:
                 along = sum((pc - sc) * c for pc, sc, c in zip(p, start, ab)) / length
                 s = min(max(along, 0.0) + cfg.RC_LOOKAHEAD_CM, length)
                 aim = [sc + c * s / length for sc, c in zip(start, ab)]
+                a = min(max(along, 0.0), length)
+                cross = [pc - (sc + c * a / length) for pc, sc, c in zip(p, start, ab)]
+                off = math.sqrt(sum(c * c for c in cross))
+                if off > 0 and to_target > cfg.PATH_TOL_CM:
+                    keep = min(off, cfg.PATH_TOL_CM) / off   # part of the offset we accept
+                    aim = [am + c * keep for am, c in zip(aim, cross)]
             else:
                 aim = list(target)
             err = [a - pc for a, pc in zip(aim, p)]
