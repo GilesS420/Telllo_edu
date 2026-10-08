@@ -104,7 +104,7 @@ class DroneApp:
         elif t == "reset_puddles":
             self.tracker.reset()
             self.link.send({"type": "ack", "ref": t})
-        elif t in ("mission", "takeoff", "set_pose"):
+        elif t in ("mission", "takeoff", "set_pose", "helipad_land"):
             self.commands.put(msg)
         else:
             self.link.send({"type": "error", "ref": t, "error": "unknown message type"})
@@ -156,6 +156,8 @@ class DroneApp:
             self.safe_land()
         elif t == "takeoff":
             self.takeoff()
+        elif t == "helipad_land":
+            self.helipad_test()
         elif t == "set_pose":
             if self.airborne:
                 raise RuntimeError("set_pose is only allowed on the ground")
@@ -186,14 +188,33 @@ class DroneApp:
             print("↩️  Terug boven de startplek")
             self.follower.hold_position((x0, y0, height))
 
-    def safe_land(self, spot=None):
-        """Land. With spot=(x, y) and working odometry: precise landing on that spot."""
+    def helipad_test(self):
+        """Test without a path: take off (if needed), look for the H here and land on it."""
+        self.abort.clear()
+        self.pads = []
+        self.takeoff()
+        x, y, _, _ = self.pose.get()
+        print("🔎 H-test: zoeken naar een H onder de drone")
+        found = False
+        try:
+            found = self.land_on_helipad((x, y))
+        except MissionAborted:
+            found = True   # Land button / abort: just land
+        except Exception as e:
+            print(f"⚠️  Landen op de H mislukt ({e}), gewoon landen")
+        self.safe_land(None if found else (x, y), helipad=False)
+
+    def safe_land(self, spot=None, helipad=True):
+        """
+        Land. With spot=(x, y) and working odometry: precise landing on that spot,
+        or on an H landing pad near it (helipad and HELIPAD_LAND).
+        """
         if not self.airborne:
             self.state = "idle"
             return
         self.state = "landing"
         print("🛬 Landen...")
-        if spot is not None and cfg.HELIPAD_LAND:
+        if spot is not None and helipad and cfg.HELIPAD_LAND:
             try:
                 if self.land_on_helipad(spot):
                     spot = None
@@ -308,7 +329,7 @@ class DroneApp:
             print("ℹ️  Geen H gevonden bij het eindpunt: landen op de coördinaten")
             return False
         t_seen, tx, ty, size = sighting
-        print(f"🅷 H gevonden op ({tx:.0f}, {ty:.0f}): erboven centreren en dalen")
+        print(f"🛬 H gevonden op ({tx:.0f}, {ty:.0f}): erboven centreren en dalen")
         period = 1.0 / cfg.RC_HZ
         deadline = time.time() + cfg.HELIPAD_TIMEOUT_S
         try:
@@ -420,6 +441,9 @@ class DroneApp:
                 if pad is not None and math.hypot(d.cx - pad.cx, d.cy - pad.cy) < pad.size_px:
                     continue  # the H itself is not a puddle
                 x, y, s = pixel_to_world(d.cx, d.cy, w, h, height, pose)
+                if self.pads and t_frame - self.pads[-1][0] < 3 and math.hypot(
+                        x - self.pads[-1][1], y - self.pads[-1][2]) < 30:
+                    continue  # part of the landing pad, also when the H was missed
                 report = self.tracker.add(x, y, d.area_px * s * s)
                 if report:
                     print(f"💧 Plas #{report['id']} op x={report['x']} y={report['y']} "

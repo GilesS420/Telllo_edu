@@ -125,6 +125,7 @@ gewoon uitgevoerd en getekend.
 | `mission` | `id`, `waypoints` (`[{"x","y","z"}, …]` of `[[x,y,z], …]`), optioneel `speed` (10-100 cm/s), `land_at_end`, `nav_mode` (`"go"`/`"rc"`), `fine` (`"auto"`/`"all"`/`"last"`/`"off"`) | Opstijgen (als nodig) en de waypoints afvliegen |
 | `abort` | – | Missie afbreken na de huidige stap en landen |
 | `land` / `takeoff` | – | `land` breekt ook een lopende missie af |
+| `helipad_land` | – | Test zonder pad: opstijgen (als nodig), een H onder de drone zoeken en erop landen |
 | `set_pose` | `x`, `y`, `yaw` (graden, links = positief) | Startpositie/-richting instellen (alleen op de grond) |
 | `get_puddles` | – | Antwoord: `puddle_list` |
 | `reset_puddles` | – | Plassenlijst wissen |
@@ -263,7 +264,13 @@ dan de H. In de GUI zie je een gevonden H groen omlijnd in het camerabeeld. Test
 python -m drone.helipad foto_van_de_h.jpg
 ```
 
-In de simulator (`--sim`) ligt een H op (10, −30). Een missie die op (0, 0) eindigt, landt erop.
+**Testen zonder pad**: de knop *Landen op H* (sneltoets `H`) stijgt op als de drone nog op de
+grond staat, zoekt een H binnen `HELIPAD_RADIUS_CM` van waar hij hangt en landt erop. Leg de H
+dus op minder dan ongeveer 50 cm van de drone. Ziet hij geen H, dan landt hij gewoon ter plaatse.
+De knop *Landen* breekt het af.
+
+In de simulator (`--sim`) ligt een H op (10, −30). Een missie die op (0, 0) eindigt, landt erop,
+net als *Landen op H* vanaf de startplek.
 
 **Resultaat in de simulator** (zelfde parcours, met wind en draaien):
 
