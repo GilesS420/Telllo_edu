@@ -168,6 +168,8 @@ class TelloGUI:
                 ("Opstijgen", lambda: self.app.submit({"type": "takeoff"}), "#3a4757", 1, 0),
                 ("Landen  (L)", self.land, "#c2701b", 1, 1)):
             tk_button(grid, text, cmd, color).grid(row=r, column=c, sticky="ew", padx=2, pady=2)
+        tk_button(grid, "Landen op de H  (H)", self.helipad_land, "#2f7d6d").grid(
+            row=2, column=0, columnspan=2, sticky="ew", padx=2, pady=2)
         grid.columnconfigure(0, weight=1, uniform="b")
         grid.columnconfigure(1, weight=1, uniform="b")
         tk_button(box, "⚠  NOODSTOP – motoren uit  (X)", self.emergency, "#c62f37",
@@ -432,6 +434,7 @@ class TelloGUI:
         for i in range(3):
             r.bind(f"<Control-Key-{i + 1}>", lambda e, i=i: self.tabs.select(i))
         r.bind("<KeyPress-l>", lambda e: self._key(self.land, e))
+        r.bind("<KeyPress-h>", lambda e: self._key(self.helipad_land, e))
         r.bind("<KeyPress-x>", lambda e: self._key(self.emergency, e))
 
     def _key(self, action, event, typing_ok=False):
@@ -1041,6 +1044,11 @@ class TelloGUI:
 
     def land(self):
         self.app.submit({"type": "land"})
+
+    def helipad_land(self):
+        """Take off if needed, look for an H below the drone and land on it (no path)."""
+        self.app.submit({"type": "helipad_land"})
+        self.toast.show("Zoeken naar de H en erop landen…")
 
     def emergency(self):
         self.app.emergency_stop()
