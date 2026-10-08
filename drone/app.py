@@ -138,7 +138,7 @@ class DroneApp:
             except queue.Empty:
                 # Tello lands automatically after 15 s without commands
                 if self.airborne and time.time() - self._last_cmd_time > cfg.KEEPALIVE_INTERVAL:
-                    self.tello.send_rc_control(0, 0, 0, 0)
+                    self.follower.rc(0, 0, 0, 0)
                     self._last_cmd_time = time.time()
                 continue
             try:
@@ -231,7 +231,7 @@ class DroneApp:
             except Exception as e:  # never stay in the air because of this
                 print(f"⚠️  Precies landen mislukt ({e}), gewoon landen")
         try:
-            self.tello.land()
+            self.follower.command(self.tello.land)
         except Exception as e:
             print(f"⚠️  Land command failed: {e}")
         self.airborne = False
@@ -290,8 +290,7 @@ class DroneApp:
     def _look_for_pad(self, end_xy, climb_cms):
         """Hover (or climb to HELIPAD_SEARCH_HEIGHT_CM) while looking for the H."""
         t_end = time.time() + cfg.HELIPAD_SEARCH_S
-        if climb_cms:
-            t_end += 6
+        t_climb = time.time() + 8      # climb at most this long
         try:
             while time.time() < t_end:
                 self.follower._check_abort()
@@ -299,7 +298,10 @@ class DroneApp:
                 if found:
                     return found
                 x, y, z, _ = self.pose.get()
-                vz = climb_cms if climb_cms and z < cfg.HELIPAD_SEARCH_HEIGHT_CM else 0
+                vz = 0
+                if climb_cms and z < cfg.HELIPAD_SEARCH_HEIGHT_CM and time.time() < t_climb:
+                    vz = climb_cms
+                    t_end = time.time() + cfg.HELIPAD_SEARCH_S   # look once up there
                 # stay above the end point (otherwise the drone drifts away while looking)
                 vx, vy = (cfg.RC_GAIN * (e - c) for e, c in zip(end_xy, (x, y)))
                 n = math.hypot(vx, vy)
@@ -309,7 +311,7 @@ class DroneApp:
                 time.sleep(0.1)
             return None
         finally:
-            self.tello.send_rc_control(0, 0, 0, 0)
+            self.follower.rc(0, 0, 0, 0)
 
     def land_on_helipad(self, end_xy):
         """
@@ -354,23 +356,26 @@ class DroneApp:
                 if err < cfg.HELIPAD_CENTER_TOL_CM and (z <= cfg.HELIPAD_FINAL_CM or big):
                     print(f"🎯 Boven het midden van de H ({err:.0f} cm ernaast)")
                     return True
-                if lost > 5.0 and err < cfg.FINE_TOL_CM:
-                    print("ℹ️  H niet meer te zien: landen op de laatst gemeten plek")
-                    return True
                 # only come down while centred and the H is in view; otherwise
                 # hold the height and steer back above it
                 centred = err < cfg.HELIPAD_CENTER_TOL_CM * (2 if z > 60 else 1)
                 vz = -cfg.HELIPAD_DESCENT_CMS if centred and lost < 1.0 else 0.0
+                if lost > 1.5 and z < 120:
+                    vz = cfg.HELIPAD_DESCENT_CMS   # H out of view: go up a bit to find it again
                 vx, vy = cfg.RC_GAIN * ex, cfg.RC_GAIN * ey
                 n = math.hypot(vx, vy)
                 if n > 15:
                     vx, vy = vx * 15 / n, vy * 15 / n
+                if not self.pose.measured and lost > 0.5:
+                    # no odometry and no fresh view of the H: the position doesn't
+                    # update, steering on it would fly the drone away. Hold still.
+                    vx = vy = 0.0
                 f.send_velocity(vx, vy, vz, min_units=0 if centred else cfg.RC_MIN_UNITS)
                 time.sleep(period)
             print(f"ℹ️  H: na {cfg.HELIPAD_TIMEOUT_S}s nog niet gecentreerd, hier landen")
             return True
         finally:
-            self.tello.send_rc_control(0, 0, 0, 0)
+            self.follower.rc(0, 0, 0, 0)
 
     def read_height(self, default):
         """Height above the floor from the ToF sensor (cm), fallback to default."""

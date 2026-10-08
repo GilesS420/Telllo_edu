@@ -224,25 +224,25 @@ class PathFollower:
         self._last_rc = time.time()
         self.tello.send_rc_control(lr, fb, ud, yv)
 
-    def _go(self, bx, by, bz, speed):
+    def command(self, fn, *args):
         """
-        'go' move. The Tello answers 'error Not joystick' when a 'go' arrives while
-        it is still busy with rc (stick) commands, e.g. right after the recentering
-        at takeoff or precise positioning: wait until it has settled, and retry.
+        Send an SDK command (go, cw/ccw, land, ...). The Tello answers 'error Not
+        joystick' when such a command arrives while it is still busy with rc (stick)
+        commands, e.g. right after the recentering at takeoff or precise
+        positioning: wait until it has settled, and retry.
         """
         wait = cfg.RC_SETTLE_S - (time.time() - self._last_rc)
         if wait > 0:
             time.sleep(wait)
         for attempt in range(3):
             try:
-                return self.tello.go_xyz_speed(bx, by, bz, speed)
+                return fn(*args)
             except Exception as e:
                 if "joystick" not in str(e).lower() or attempt == 2:
                     raise
                 print("ℹ️  Tello nog bezig met de vorige beweging: even wachten en opnieuw")
                 self.tello.send_rc_control(0, 0, 0, 0)
                 time.sleep(1.5)
-                self._check_abort()
 
     def _check_abort(self):
         if self.abort.is_set():
@@ -299,9 +299,9 @@ class PathFollower:
         deg = int(round(abs(err)))
         print(f"🧭 Richting corrigeren: {err:+.0f}°")
         if err > 0:   # mission yaw is counter-clockwise positive
-            self.tello.rotate_counter_clockwise(deg)
+            self.command(self.tello.rotate_counter_clockwise, deg)
         else:
-            self.tello.rotate_clockwise(deg)
+            self.command(self.tello.rotate_clockwise, deg)
         time.sleep(0.3)  # let the IMU reading catch up
         new_err = self.yaw_error()
         if abs(new_err) > abs(err) + 2:
@@ -332,7 +332,7 @@ class PathFollower:
             wdx, wdy = self.pose.body_to_world(bx, by)
             self.pose.begin_move((x + wdx, y + wdy, z + bz), speed)
             try:
-                self._go(bx, by, bz, speed)
+                self.command(self.tello.go_xyz_speed, bx, by, bz, speed)
             except Exception:
                 self.pose.cancel_move()
                 raise
