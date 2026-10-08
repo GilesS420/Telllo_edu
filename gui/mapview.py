@@ -51,8 +51,8 @@ class MapView:
         self._terrain_key = None
         self._labels = []
         self._label_key = None
-        self._puddle_patches = []
-        self._puddle_key = None
+        self._pad_patch = None
+        self._pad_key = None
         self._init_map()
 
     # ---------------------------------------------------------------- setup
@@ -90,8 +90,8 @@ class MapView:
         self.draft = P("o--", color=C["draft"], markersize=7, linewidth=1.5, zorder=5)
         self.selected = P("o", color=C["draft"], markersize=15, markerfacecolor="none",
                           markeredgewidth=2, linestyle="none", zorder=5)
-        self.footprint = Polygon([[0, 0]], closed=True, fill=True, facecolor=C["puddle"],
-                                 alpha=0.08, edgecolor=C["puddle"], linewidth=0.8, zorder=2)
+        self.footprint = Polygon([[0, 0]], closed=True, fill=True, facecolor=C["cyan"],
+                                 alpha=0.08, edgecolor=C["cyan"], linewidth=0.8, zorder=2)
         ax.add_patch(self.footprint)
         self.drone = Polygon([[0, 0]], closed=True, facecolor=C["danger"], edgecolor="white",
                              linewidth=1, zorder=7)
@@ -246,22 +246,22 @@ class MapView:
         self.footprint.set_visible(bool(fp))
         self._terrain(s["terrain"], s["terrain_version"])
 
-        # puddles as circles with their real size
-        pkey = tuple((p["id"], p["x"], p["y"], p["area_cm2"]) for p in s["puddles"])
-        if pkey != self._puddle_key:
-            self._puddle_key = pkey
-            for patch in self._puddle_patches:
-                patch.remove()
-            self._puddle_patches = []
-            for p in s["puddles"]:
-                r = max(8.0, math.sqrt(max(p["area_cm2"], 1) / math.pi))
-                c = Circle((p["y"], p["x"]), r, facecolor=C["puddle"], alpha=0.35,
-                           edgecolor=C["puddle"], linewidth=1.5, zorder=4)
-                self.ax.add_patch(c)
-                self._puddle_patches.append(c)
+        # H landing pad seen this flight
+        pad = s.get("helipad")
+        pkey = None if pad is None else (round(pad[0]), round(pad[1]))
+        if pkey != self._pad_key:
+            self._pad_key = pkey
+            if self._pad_patch is not None:
+                self._pad_patch.remove()
+                self._pad_patch = None
+            if pad is not None:
+                self._pad_patch = Circle((pad[1], pad[0]), 15, facecolor=C["cyan"], alpha=0.35,
+                                         edgecolor=C["cyan"], linewidth=1.5, zorder=4)
+                self.ax.add_patch(self._pad_patch)
 
         labels = [((p[1], p[0]), f" {i + 1}", C["draft"]) for i, p in enumerate(wps)]
-        labels += [((p["y"], p["x"]), f" plas {p['id']}", C["puddle"]) for p in s["puddles"]]
+        if pad is not None:
+            labels.append(((pad[1], pad[0]), " H", C["cyan"]))
         for o in s.get("obstacles", []):
             labels.append(((o["y"], o["x"]), f"{o['height']:+.0f} cm", C["warn"]))
         key = tuple((tuple(round(v) for v in pt), t) for pt, t, _ in labels)
@@ -275,7 +275,8 @@ class MapView:
 
         # limits: fit everything (or the user's zoom), equal scale
         pts = [(p[1], p[0]) for p in wps + mission + s["trail"][-600:]] + [(y, x), (0, 0)]
-        pts += [(p["y"], p["x"]) for p in s["puddles"]]
+        if pad is not None:
+            pts.append((pad[1], pad[0]))
         pts += [(c[1], c[0]) for c in s["terrain"]]
         xs, ys = [p[0] for p in pts], [p[1] for p in pts]
         span = max(max(xs) - min(xs), max(ys) - min(ys), 250) + 80

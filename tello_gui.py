@@ -9,7 +9,7 @@ Layout
     left         plan the path: waypoints, raster pattern, mission settings, fly
     middle       tabs: 3D view | map & terrain (click to plan) | sensor graphs
     right        camera, instruments (horizon, compass, height), sensor values,
-                 puddles found
+                 landing pad (H) and coordinate frame
 
 Uses DroneApp (drone/app.py), so Jetson missions keep working while the GUI is
 open (they are drawn too). Everything runs offline (tkinter + matplotlib), so
@@ -91,14 +91,15 @@ class TelloGUI:
         self.sel = None              # selected waypoint index
         self.trail = []              # flown positions
         self.trail_mission = None
+        self.trail_frame = None      # app.frame_id the trail belongs to
         self.mission_count = 0
         self.show = None             # displayed pose, glides towards the real pose
         self.takeoff_time = None
         self._dragging = False
         self._next = {"3d": 0, "map": 0, "chart": 0, "side": 0}
         self._tick_n = 0
-        self._puddle_key = None
         self._camera_photo = None
+        self._cam_pending = None     # camera switch asked, not done yet
         self._was_airborne = False
         self._summary = None
 
@@ -169,7 +170,9 @@ class TelloGUI:
                 ("Landen  (L)", self.land, "#c2701b", 1, 1)):
             tk_button(grid, text, cmd, color).grid(row=r, column=c, sticky="ew", padx=2, pady=2)
         tk_button(grid, "Landen op de H  (H)", self.helipad_land, "#2f7d6d").grid(
-            row=2, column=0, columnspan=2, sticky="ew", padx=2, pady=2)
+            row=2, column=0, sticky="ew", padx=2, pady=2)
+        tk_button(grid, "↺  Reset omgeving", self.reset_environment, "#5a4a8a").grid(
+            row=2, column=1, sticky="ew", padx=2, pady=2)
         grid.columnconfigure(0, weight=1, uniform="b")
         grid.columnconfigure(1, weight=1, uniform="b")
         tk_button(box, "⚠  NOODSTOP – motoren uit  (X)", self.emergency, "#c62f37",
@@ -360,7 +363,7 @@ class TelloGUI:
                                 fg=C["muted"], font=F["mono"], relief=tk.FLAT, bd=0,
                                 highlightthickness=0, insertbackground=C["text"])
         for tag, color in (("err", C["danger"]), ("warn", C["warn"]), ("ok", C["ok"]),
-                           ("puddle", C["puddle"]), ("wp", C["accent"])):
+                           ("pad", C["cyan"]), ("wp", C["accent"])):
             self.log_text.tag_configure(tag, foreground=color)
         scroll = ttk.Scrollbar(box, command=self.log_text.yview)
         self.log_text.configure(yscrollcommand=scroll.set)
@@ -410,25 +413,13 @@ class TelloGUI:
         tiles.columnconfigure(0, weight=1)
         tiles.columnconfigure(1, weight=1)
 
-        # --- puddles
-        outer, header, box = card(right, "Gevonden plassen")
+        # --- landing pad + coordinate frame
+        outer, _, box = card(right, "Landingsplaats en assen")
         outer.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
-        self.puddle_count = ttk.Label(header, text="0", style="Muted.TLabel")
-        self.puddle_count.pack(side=tk.RIGHT)
-        self.puddle_tree = ttk.Treeview(box, columns=("id", "x", "y", "area", "hits"),
-                                        show="headings", height=3, selectmode="browse")
-        for col, text, w in (("id", "#", 30), ("x", "x", 60), ("y", "y", 60),
-                             ("area", "cm²", 60), ("hits", "gezien", 60)):
-            self.puddle_tree.heading(col, text=text)
-            self.puddle_tree.column(col, width=w, anchor=tk.E)
-        self.puddle_tree.pack(fill=tk.BOTH, expand=True)
-        row = ttk.Frame(box, style="Card.TFrame")
-        row.pack(fill=tk.X, pady=(6, 0))
-        ttk.Button(row, text="Vlieg naar plas", style="Small.TButton",
-                   command=self.goto_puddle).pack(side=tk.LEFT)
-        ttk.Button(row, text="Wis lijst", style="Small.TButton",
-                   command=lambda: self.app.submit({"type": "reset_puddles"})).pack(
-            side=tk.RIGHT)
+        self.pad_info = ttk.Label(box, text="", style="Card.TLabel", justify=tk.LEFT,
+                                  wraplength=330)
+        self.pad_info.pack(anchor=tk.W, fill=tk.X)
+        self._pad_text = None
 
     def _bind_keys(self):
         r = self.root
@@ -478,8 +469,10 @@ class TelloGUI:
         if app.airborne and not self._was_airborne:
             self.takeoff_time = now
         self._was_airborne = app.airborne
-        if app.mission_id != self.trail_mission:
-            self.trail_mission = app.mission_id
+        if app.mission_id != self.trail_mission or app.frame_id != self.trail_frame:
+            if app.frame_id != self.trail_frame:
+                self.show = list(pose)   # new frame: jump, don't glide from the old one
+            self.trail_mission, self.trail_frame = app.mission_id, app.frame_id
             self.trail = []
         x, y, z, _ = pose
         if app.airborne and (not self.trail or
@@ -499,7 +492,7 @@ class TelloGUI:
         if now >= self._next["side"]:
             self._next["side"] = now + 0.2
             self._tiles(tel)
-            self.update_puddles(app.tracker.confirmed())
+            self.update_pad_info()
 
         tab = self.tabs.index(self.tabs.select())
         if tab == 0 and now >= self._next["3d"]:
@@ -522,14 +515,12 @@ class TelloGUI:
         for chunk in "".join(lines).splitlines(keepends=True):
             tag = ("err" if "❌" in chunk or "🚨" in chunk else
                    "warn" if "⚠" in chunk or "🛑" in chunk else
-                   "puddle" if "💧" in chunk else
+                   "pad" if "🛬" in chunk or "🔄" in chunk else
                    "wp" if "📍" in chunk or "🗺" in chunk else
                    "ok" if "✅" in chunk or "🏁" in chunk else None)
             self.log_text.insert(tk.END, chunk, tag or ())
             if tag in ("err", "warn"):
                 self.toast.show(chunk.strip(), "error" if tag == "err" else "warn", 6)
-            elif tag == "puddle":
-                self.toast.show(chunk.strip(), "info", 5)
         self.log_text.delete("1.0", "end-400l")       # keep the last 400 lines
         self.log_text.see(tk.END)
         self.log_text.configure(state=tk.DISABLED)
@@ -600,6 +591,8 @@ class TelloGUI:
         x, y, _, yaw = self.show
         half_w = h * math.tan(math.radians(cfg.CAM_HFOV_DEG) / 2)
         half_l = half_w * 0.75
+        if cfg.CAM_ROTATE_DEG % 180:   # image turned 90/270: its wide side points forward
+            half_w, half_l = half_l, half_w
         c, s = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
         pts = []
         for f, l in ((half_l, half_w), (half_l, -half_w), (-half_l, -half_w), (-half_l, half_w)):
@@ -614,7 +607,7 @@ class TelloGUI:
             "waypoints": list(self.waypoints), "selected": self.sel,
             "mission": list(self.app.current_waypoints), "reached": self.app.waypoints_reached,
             "trail": self.trail, "airborne": self.app.airborne,
-            "puddles": self.app.tracker.confirmed(),
+            "helipad": self.app.seen_helipad(),
             "terrain": terrain.snapshot() if terrain and self.terrain3d.get() else [],
             "terrain_version": (terrain.version if terrain else 0, self.terrain3d.get()),
             "ground_under": terrain.elevation_at(x, y) if terrain else None,
@@ -670,20 +663,18 @@ class TelloGUI:
         for ch in self.charts:
             ch.draw(data, window)
 
-    def update_puddles(self, puddles):
-        key = tuple((p["id"], p["x"], p["y"], p.get("hits")) for p in puddles)
-        if key == self._puddle_key:
-            return
-        self._puddle_key = key
-        sel = self.puddle_tree.selection()
-        self.puddle_tree.delete(*self.puddle_tree.get_children())
-        for p in puddles:
-            self.puddle_tree.insert("", tk.END, iid=str(p["id"]), values=(
-                p["id"], f"{p['x']:.0f}", f"{p['y']:.0f}", f"{p['area_cm2']:.0f}",
-                p.get("hits", "")))
-        if sel and self.puddle_tree.exists(sel[0]):
-            self.puddle_tree.selection_set(sel[0])
-        self.puddle_count.configure(text=str(len(puddles)))
+    def update_pad_info(self):
+        pad = self.app.seen_helipad()
+        lines = [f"H gezien op  x {pad[0]:.0f}, y {pad[1]:.0f} cm" if pad else
+                 "Nog geen H gezien (deze vlucht).",
+                 "",
+                 "Assen: (0, 0) = startplek van de drone, x = richting van de neus "
+                 "(voorcamera), y = links."
+                 + (" Wordt bij elke start opnieuw gezet." if cfg.RESET_FRAME_ON_TAKEOFF else "")]
+        text = "\n".join(lines)
+        if text != self._pad_text:
+            self._pad_text = text
+            self.pad_info.configure(text=text)
 
     def update_camera(self, tel):
         app = self.app
@@ -714,8 +705,13 @@ class TelloGUI:
             self.cam.create_line(cx + dx * 6, cy + dy * 6, cx + dx * 16, cy + dy * 16,
                                  fill="#ffffff", width=1)
         mode = "ONDER" if app.downvision_enabled else "VOOR"
+        if self._cam_pending == app.downvision_enabled:
+            self._cam_pending = None   # the switch is done
+        want = "Onder" if app.downvision_enabled else "Voor"
+        if self._cam_pending is None and self.cam_seg.value != want:
+            self.cam_seg.set(want)
         self.cam.create_rectangle(x0 + 4, y0 + 4, x0 + 58, y0 + 22, fill="#05080b", outline="")
-        self.cam.create_text(x0 + 8, y0 + 6, text=mode, anchor=tk.NW, fill=C["puddle"],
+        self.cam.create_text(x0 + 8, y0 + 6, text=mode, anchor=tk.NW, fill=C["cyan"],
                              font=F["title"])
         if tel.get("tof") and app.airborne:
             self.cam.create_text(x0 + 8, y1 - 6, anchor=tk.SW, fill="white", font=F["small"],
@@ -726,11 +722,12 @@ class TelloGUI:
 
     # ================================================================ camera
     def set_camera_mode(self, use_downvision):
-        try:
-            self.app.set_downvision(use_downvision)
-        except Exception as e:
-            self.toast.show(f"Camera wisselen mislukt: {e}", "error")
-        self.cam_seg.set("Onder" if self.app.downvision_enabled else "Voor")
+        # via the mission thread: only one thread may talk to the Tello at a time
+        self._cam_pending = bool(use_downvision)
+        self.app.submit({"type": "downvision", "enabled": use_downvision})
+        if self.app.state in ("taking_off", "flying", "landing"):
+            self.toast.show("De camera wisselt zodra de drone klaar is met de huidige "
+                            "opdracht.", "info")
 
     def toggle_record(self):
         self.app.toggle_recording()
@@ -1040,20 +1037,18 @@ class TelloGUI:
             return
         self.app.submit(self._mission([self.waypoints[self.sel]], land_at_end=False))
 
-    def goto_puddle(self):
-        sel = self.puddle_tree.selection()
-        p = next((p for p in self.app.tracker.confirmed() if sel and str(p["id"]) == sel[0]),
-                 None)
-        if p is None:
-            self.toast.show("Selecteer eerst een plas in de lijst.", "warn")
-            return
-        z = self.app.pose.get()[2] if self.app.airborne else self._map_z()
-        point = (p["x"], p["y"], min(max(z, cfg.GEOFENCE["z"][0]), cfg.GEOFENCE["z"][1]))
-        if self._valid(point):
-            self.app.submit(self._mission([point], land_at_end=False))
-
     def land(self):
         self.app.submit({"type": "land"})
+
+    def reset_environment(self):
+        """After a flight: drone back to (0, 0) facing x, forget trail, H and terrain."""
+        if self.app.airborne:
+            self.toast.show("Resetten kan alleen op de grond (eerst landen).", "warn")
+            return
+        self.app.submit({"type": "reset"})
+        self.trail = []
+        self._summary = None
+        self.toast.show("Omgeving gereset: drone = (0, 0), x = richting van de neus.", "ok")
 
     def helipad_land(self):
         """Take off if needed, look for an H below the drone and land on it (no path)."""
@@ -1074,7 +1069,7 @@ class TelloGUI:
 
 
 class PatternDialog:
-    """Raster ('grasmaaier') pattern to scan an area for puddles and terrain."""
+    """Raster ('grasmaaier') pattern to scan an area (camera + terrain)."""
 
     def __init__(self, root, gui):
         self.gui = gui
@@ -1111,7 +1106,9 @@ class PatternDialog:
         return {k: float(v.get().replace(",", ".")) for k, v in self.vars.items()}
 
     def _footprint(self, z):
-        return 2 * z * math.tan(math.radians(cfg.CAM_HFOV_DEG) / 2)
+        """Width of the floor the camera sees across the flight direction (lanes go along x)."""
+        w = 2 * z * math.tan(math.radians(cfg.CAM_HFOV_DEG) / 2)
+        return w * 0.75 if cfg.CAM_ROTATE_DEG % 180 else w   # turned image: narrow side across
 
     def _hint(self, set_spacing=False):
         try:
@@ -1123,7 +1120,7 @@ class PatternDialog:
             self.vars["spacing"].set(str(int(fw * 0.75 // 5 * 5)))
         self.hint.configure(text=f"Op {z:.0f} cm ziet de camera ±{fw:.0f} cm breed. Een "
                                  f"tussenafstand tot ±{fw * 0.8:.0f} cm geeft overlap, zodat "
-                                 f"geen plas gemist wordt.")
+                                 f"geen stuk vloer gemist wordt.")
 
     def make(self):
         try:
@@ -1169,6 +1166,13 @@ def main():
     else:
         from djitellopy import Tello
         Tello.RESPONSE_TIMEOUT = cfg.RESPONSE_TIMEOUT
+        # djitellopy binds its timeout as a default argument when the class is defined,
+        # so the line above alone changes nothing: long 'go' moves would time out after
+        # 7 s and be sent again. Set the default arguments themselves.
+        for name in ("send_control_command", "send_command_with_return"):
+            fn = getattr(Tello, name, None)
+            if fn is not None and fn.__defaults__:
+                fn.__defaults__ = (cfg.RESPONSE_TIMEOUT,) + fn.__defaults__[1:]
         tello = Tello()
 
     app = DroneApp(tello, record_dir=args.record)

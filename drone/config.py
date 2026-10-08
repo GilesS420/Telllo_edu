@@ -4,12 +4,14 @@ Central configuration for the autonomous Tello EDU mission.
 All distances are in centimetres, angles in degrees, unless stated otherwise.
 
 Coordinate frame used everywhere (the "mission frame"):
-    x = forward (drone nose direction at takeoff, unless set_pose sets a yaw)
+    x = forward (the direction of the drone's nose / front camera at takeoff)
     y = left
     z = height above the floor
-    origin = where the drone stands when the script starts (or set via set_pose)
-The Jetson converts real-world coordinates to this frame before sending them,
-and converts the puddle coordinates it gets back to real-world coordinates.
+    origin = where the drone stands at takeoff
+With RESET_FRAME_ON_TAKEOFF the frame is set again at every takeoff from the
+ground (unless set_pose was sent just before), so the coordinates of a flight
+always start at the drone itself, whichever way it was put down.
+The Jetson converts real-world coordinates to this frame before sending them.
 """
 
 # ---------------------------------------------------------------------------
@@ -17,8 +19,9 @@ and converts the puddle coordinates it gets back to real-world coordinates.
 # ---------------------------------------------------------------------------
 LISTEN_HOST = "127.0.0.1"   # loopback by default; set to 0.0.0.0 only if required
 LISTEN_PORT = 9000          # Jetson sends commands to this port
-JETSON_HOST = None          # None = reply to whoever sent the last command
-JETSON_PORT = 9001          # Jetson listens on this port for puddles/status
+JETSON_HOST = None          # None = reply to whoever sent the last command;
+                            # an IP = only accept commands from that address
+JETSON_PORT = 9001          # Jetson listens on this port for status/events
 STATUS_INTERVAL = 1.0       # seconds between status messages
 
 # ---------------------------------------------------------------------------
@@ -26,7 +29,7 @@ STATUS_INTERVAL = 1.0       # seconds between status messages
 # ---------------------------------------------------------------------------
 DEFAULT_SPEED = 30          # cm/s for 'go' commands (10-100)
 MAX_STEP_CM = 100           # long segments are split in steps of max this length
-                            # (smaller = more accurate puddle positions + faster abort)
+                            # (smaller = more corrections + faster abort)
 MIN_MOVE_CM = 20            # Tello cannot 'go' when |x|,|y|,|z| are all < 20
 MIN_BATTERY = 5             # refuse a mission below this battery %
 RESPONSE_TIMEOUT = 20       # s, djitellopy wait time for 'ok' (long go commands)
@@ -49,6 +52,7 @@ FINE_TIMEOUT_S = 4          # give up precise positioning after this time
 
 # The Tello slides sideways while it takes off and lands. With working odometry:
 TAKEOFF_RECENTER = True     # after takeoff, move back above the takeoff spot
+RESET_FRAME_ON_TAKEOFF = True  # new mission frame at every takeoff (see the top of this file)
 PRECISE_LAND = True         # mission end: descend slowly while holding the spot, then land
 LAND_HOVER_CM = 30          # ... down to this height, the last bit is the normal 'land'
 LAND_DESCENT_CMS = 25       # descent speed (cm/s) during the precise landing
@@ -108,7 +112,8 @@ CAM_ROTATE_DEG = 270          # camera image turned 0/90/180/270 deg relative to
                             # Detected automatically on the first move of a flight
                             # (log: "Camerabeeld is ... gedraaid"); put that value here.
 CAM_OFFSET_CM = (0.0, 0.0)  # camera position relative to drone centre (fwd, left)
-FRAME_LATENCY_S = 0.2       # video delay; puddle position uses pose at t - latency
+FRAME_LATENCY_S = 0.2       # video delay; H position uses the pose at t - latency
+DETECT_HZ = 10              # downward camera processed (H, recording, GUI view) per second
 
 # ---------------------------------------------------------------------------
 # Visual odometry: measure the real movement from the downward camera
@@ -123,38 +128,6 @@ VO_MAX_YAW_STEP = 1.5       # deg turned since the keyframe; more = take a new k
 VO_KEY_SHIFT_PX = 20        # new keyframe after this much image shift
 VO_KEY_QUALITY = 0.3        # ... or when the match quality drops below this
 VO_LOST_S = 0.7             # s without good frames = odometry lost
-
-# ---------------------------------------------------------------------------
-# Puddle detection
-# ---------------------------------------------------------------------------
-DETECT_HZ = 10              # detection runs (max) this many times per second
-MIN_DETECT_HEIGHT = 30      # cm, no detection below this height (takeoff/landing)
-DETECTOR_BACKEND = "threshold"  # "threshold" (no training), "yolo" or "roboflow"
-
-# Trained object detection model (DETECTOR_BACKEND = "yolo" or "roboflow")
-MODEL_PATH = "models/puddles.pt"      # yolo: .pt or .onnx from Ultralytics
-ROBOFLOW_MODEL_ID = "puddles/1"       # roboflow: "<project>/<version>"
-ROBOFLOW_API_KEY = None               # or set the ROBOFLOW_API_KEY environment variable
-MODEL_CONFIDENCE = 0.5                # ignore boxes below this confidence
-MODEL_IMGSZ = 320                     # yolo input size (same as used for training)
-MODEL_CLASSES = None                  # e.g. ["puddle"]; None = accept every class
-MODEL_BORDER_PX = 2                   # box this close to the edge = cut-off puddle
-
-# Settings below are for the "threshold" backend (MIN_AREA_PX and
-# REJECT_BORDER_BLOBS are used by every backend)
-PUDDLE_MODE = "dark"        # "dark", "bright" (reflections) or "both"
-BLUR_KERNEL = 7             # Gaussian blur kernel (odd number)
-DARK_OFFSET = 30            # pixel must be this much darker than the floor median
-BRIGHT_OFFSET = 60          # pixel must be this much brighter (mode bright/both)
-MIN_AREA_PX = 250           # ignore blobs smaller than this (pixels)
-MAX_AREA_FRAC = 0.7         # ignore blobs covering more than this part of the image
-MIN_SOLIDITY = 0.5          # area / convex-hull area, removes thin lines/cracks
-BORDER_MARGIN_PX = 4        # ignore this many pixels at the image border
-REJECT_BORDER_BLOBS = True  # skip puddles cut off by the image edge (wrong centre)
-
-# Tracking: merge repeated detections of the same puddle
-MERGE_RADIUS_CM = 40        # detections closer than this belong to the same puddle
-MIN_HITS = 3                # seen this many times before reported to the Jetson
 
 # ---------------------------------------------------------------------------
 # Telemetry (sensor graphs in the GUI) and terrain analysis

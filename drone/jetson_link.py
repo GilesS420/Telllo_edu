@@ -50,8 +50,10 @@ class JetsonLink:
             except ValueError as e:
                 print(f"⚠️  Invalid message from {addr}: {e}")
                 continue
-            if self.jetson_host is None or self.jetson_host == addr[0]:
-                self._last_sender = addr[0]
+            if self.jetson_host is not None and addr[0] != self.jetson_host:
+                print(f"⚠️  Bericht van {addr[0]} genegeerd (niet JETSON_HOST)")
+                continue   # with a fixed Jetson address, nobody else may send commands
+            self._last_sender = addr[0]
             self.last_rx = time.time()
             self.rx_count += 1
             try:

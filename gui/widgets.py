@@ -313,9 +313,9 @@ class HeightGauge(tk.Canvas):
         if tof is not None:
             yg = y_of(alt - tof)
             xm = x1 + 14
-            self.create_line(xm, ya + 4, xm, yg, fill=C["puddle"], arrow=tk.LAST, width=1.5)
+            self.create_line(xm, ya + 4, xm, yg, fill=C["cyan"], arrow=tk.LAST, width=1.5)
             self.create_text(xm + 3, (ya + yg) / 2, text=f"{self.vals['tof']:.0f}",
-                             anchor=tk.W, fill=C["puddle"], font=F["tiny"])
+                             anchor=tk.W, fill=C["cyan"], font=F["tiny"])
         # drone
         cx = (x0 + x1) / 2 + 2
         self.create_line(cx - 14, ya, cx + 14, ya, fill=C["text"], width=3)

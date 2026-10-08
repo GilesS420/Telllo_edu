@@ -14,13 +14,11 @@ Run this file to test it on saved images or a video:
     python -m drone.helipad dataset/
 """
 
-import math
-
 import cv2
 import numpy as np
 
 from . import config as cfg
-from .puddle_detector import DownCamDetector
+from .downcam import DownCam
 
 
 N = 48   # size of the straightened blob
@@ -51,12 +49,7 @@ class Helipad:
         self.contour = contour
 
 
-class HelipadDetector(DownCamDetector):
-    def detect(self, frame):
-        """Return the best Helipad in the frame or None, plus the grey image."""
-        gray = self.prepare(frame)
-        return self.find(gray), gray
-
+class HelipadDetector:
     def find(self, gray):
         """Best Helipad in an already prepared (grey, cropped) image, or None."""
         H, W = gray.shape
@@ -123,7 +116,7 @@ if __name__ == "__main__":
                             if f.lower().endswith((".png", ".jpg", ".jpeg", ".bmp")))
         else:
             files.append(path)
-    det = HelipadDetector()
+    cam, det = DownCam(), HelipadDetector()
     print("ESC = stop, any other key = next image")
     for path in files:
         cap = cv2.VideoCapture(path)
@@ -132,7 +125,8 @@ if __name__ == "__main__":
             ok, frame = cap.read()
             if not ok:
                 break
-            pad, gray = det.detect(frame)
+            gray = cam.prepare(frame)
+            pad = det.find(gray)
             print(f"{path}: " + (f"H op ({pad.cx:.0f}, {pad.cy:.0f}), score {pad.score:.3f}"
                                  if pad else "geen H"))
             cv2.imshow("helipad", draw_helipad(cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR), pad))

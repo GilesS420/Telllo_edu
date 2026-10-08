@@ -8,8 +8,8 @@ What it simulates:
 * drift: slowly changing "wind" pushes the drone off its path and turns it a
   little, also while it hovers between moves (like a real Tello)
 * a downward camera (30 fps, with video delay) looking at a textured floor with
-  puddles at known positions, so visual odometry and puddle detection can be
-  tested end-to-end
+  an H landing pad, so visual odometry and landing on the H can be tested
+  end-to-end
 * IMU yaw, the ToF height sensor and the barometer, plus the other state
   fields (attitude, speeds, accelerations, temperature, flight time)
 * terrain: a few boxes on the floor, so the terrain analysis (barometer minus
@@ -26,8 +26,6 @@ import numpy as np
 
 from . import config as cfg
 
-# Puddles in the simulated world: (x, y, radius_x, radius_y) in cm, mission frame
-SIM_PUDDLES = [(150, 0, 25, 15), (200, 120, 20, 20), (50, 150, 20, 12)]
 # Objects on the floor: (x0, x1, y0, y1, height) in cm. The ToF sensor measures
 # the distance to their top, the barometer does not see them.
 SIM_TERRAIN = [(40, 90, 70, 130, 30),     # box under the example square path
@@ -104,13 +102,7 @@ class FakeTello:
         tex = cv2.GaussianBlur(rng.normal(0, 1, (n, n)).astype(np.float32), (0, 0), 3)
         tex = 150 + tex / tex.std() * 10
         coords = (np.arange(n) * TEX_RES - TEX_HALF).astype(np.float32)
-        for px, py, rx, ry in SIM_PUDDLES:
-            # rows = world x, cols = world y
-            r0, r1 = [int((v + TEX_HALF) / TEX_RES) for v in (px - rx, px + rx)]
-            c0, c1 = [int((v + TEX_HALF) / TEX_RES) for v in (py - ry, py + ry)]
-            xx, yy = np.meshgrid(coords[r0:r1], coords[c0:c1], indexing="ij")
-            inside = ((xx - px) / rx) ** 2 + ((yy - py) / ry) ** 2 <= 1
-            tex[r0:r1, c0:c1][inside] -= 80
+        # rows = world x, cols = world y
         if SIM_HELIPAD:
             px, py, paper, hs, rot = SIM_HELIPAD
             ii, jj = np.meshgrid(coords, coords, indexing="ij")   # world x, world y

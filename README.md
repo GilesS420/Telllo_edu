@@ -1,14 +1,15 @@
-# Tello EDU – autonoom pad volgen + plassen detecteren
+# Tello EDU – autonoom pad volgen + landen op een H
 
 ```
 tello_gui.py          ← start hier: grafische besturing (pad plannen, 3D, terrein, sensoren, camera)
 tello_combined.py     ← live vliegen met het toetsenbord (ZQSD), handig om te testen/kalibreren
 drone/
-    app.py            kern: missies afvliegen, plassen detecteren, Jetson-koppeling
-    config.py         alle instellingen (netwerk, snelheid, geofence, camera, detectie)
+    app.py            kern: missies afvliegen, landen op een H, Jetson-koppeling
+    config.py         alle instellingen (netwerk, snelheid, geofence, camera, landen)
     navigator.py      positie + waypoints afvliegen (stap- of vloeiende modus)
     odometry.py       meet de echte beweging: camera (visuele odometrie), kompas, hoogte
-    puddle_detector.py  plasdetectie (drempelmethode of getraind model) + samenvoegen
+    downcam.py        onderste camera: grijs + bijsnijden, pixel → coördinaat
+    helipad.py        H-landingsplatform herkennen (zonder training)
     jetson_link.py    UDP/JSON-communicatie met de Jetson
     telemetry.py      alle sensorwaarden over tijd + terreinkaart (barometer − ToF)
     sim.py            simulator: alles testen zonder drone (`--sim`), met dozen op de vloer
@@ -22,7 +23,7 @@ docs/                 afbeeldingen voor deze README
 
 ```
  Jetson  ──(UDP 9000: mission / abort / ...)──▶  Laptop  ──(Wi-Fi, djitellopy)──▶  Tello EDU
- Jetson  ◀──(UDP 9001: puddle / status / ...)──  Laptop  ◀──(video onderste camera)──
+ Jetson  ◀──(UDP 9001: status / events ...)──  Laptop  ◀──(video onderste camera)──
 ```
 
 De laptop hangt aan de Wi-Fi van de Tello. De Jetson moet de laptop via een **tweede netwerk**
@@ -34,13 +35,19 @@ laptop en Jetson op hetzelfde netwerk en maak je de drone aan met `Tello(host="<
 
 Alles in **centimeter**:
 
-* **x** = vooruit (richting van de neus van de drone bij de start)
+* **x** = vooruit (richting van de neus van de drone, de kant van de voorcamera, bij de start)
 * **y** = links
 * **z** = hoogte boven de vloer
-* **oorsprong** = waar de drone staat als het script start
+* **oorsprong** = waar de drone staat bij het opstijgen
 
-De Jetson rekent echte-wereldcoördinaten om naar dit stelsel en de plascoördinaten die
-terugkomen weer terug. Staat de drone op wereldpositie `(X0, Y0)` (meter) met zijn neus in
+De drone heeft zo zijn eigen assenstelsel. Bij **elke start vanaf de grond** wordt het opnieuw
+gezet (`RESET_FRAME_ON_TAKEOFF`): de drone staat dan op (0, 0) en x wijst waar zijn neus naar
+wijst, ook als je hem na een vlucht ergens anders of in een andere richting neerzet. Een pad
+in een JSON-bestand vertrekt dus altijd vanaf de drone zelf. De knop **Reset omgeving** (na
+een vlucht, op de grond) doet hetzelfde meteen en wist ook het spoor, de gevonden H, de
+terreinkaart en de vorige missie in de GUI.
+
+De Jetson rekent echte-wereldcoördinaten om naar dit stelsel. Staat de drone op wereldpositie `(X0, Y0)` (meter) met zijn neus in
 richting `a` (graden), dan is voor een wereldpunt `(X, Y, Z)`:
 
 ```
@@ -50,15 +57,13 @@ z = 100 * Z
 ```
 
 In plaats daarvan kan de Jetson ook vóór het opstijgen `{"type":"set_pose","x":..,"y":..,"yaw":..}`
-sturen en dan rechtstreeks in zijn eigen stelsel (in cm) werken.
+sturen en dan rechtstreeks in zijn eigen stelsel (in cm) werken. Die positie blijft dan
+gelden voor de eerstvolgende start (in plaats van het automatisch resetten).
 
 ## Installatie (in je venv)
 
 ```bash
 pip install -r requirements.txt
-# pas nodig als jullie model klaar is (kies één):
-pip install ultralytics   # DETECTOR_BACKEND = "yolo"
-pip install inference     # DETECTOR_BACKEND = "roboflow"
 ```
 
 ## Gebruik
@@ -66,14 +71,14 @@ pip install inference     # DETECTOR_BACKEND = "roboflow"
 ```bash
 python tello_gui.py --sim             # eerst proberen zonder drone
 python tello_gui.py                   # echte drone (laptop op de Wi-Fi van de Tello)
-python tello_gui.py --record dataset  # meteen camerabeelden opslaan voor Roboflow
+python tello_gui.py --record dataset  # meteen camerabeelden opslaan (dataset voor het model)
 python tello_combined.py              # live vliegen met het toetsenbord
 ```
 
 ![Tello GUI](docs/gui.png)
 
 **Bovenbalk**: toestand, batterij, vliegtijd, hoogte, odometrie en of de Jetson berichten
-stuurt. Meldingen (plas gevonden, waarschuwingen, fouten) verschijnen rechtsboven in plaats
+stuurt. Meldingen (H gezien, waarschuwingen, fouten) verschijnen rechtsboven in plaats
 van in pop-ups.
 
 **Links: pad plannen en vliegen**
@@ -82,24 +87,26 @@ van in pop-ups.
   om het aan te passen (*Bijwerken*), te verplaatsen (▲▼) of te verwijderen (✕ of Delete).
   *Drone-positie* neemt de huidige positie over. **Ctrl+Z** maakt elke wijziging ongedaan.
 * **Raster…** maakt een pad in banen (“grasmaaier”) over een rechthoek, om een gebied af te
-  zoeken naar plassen en het terrein in kaart te brengen. De tussenafstand wordt voorgesteld
+  vliegen met de camera en het terrein in kaart te brengen. De tussenafstand wordt voorgesteld
   op basis van wat de camera op die hoogte ziet.
 * Boven de lijst staan het aantal punten, de lengte en een schatting van de vliegduur.
 * **Opslaan/Laden** (Ctrl+S / Ctrl+O): vluchten als JSON in `json_flights/`
   (zie `json_flights/mission_example.json` voor het formaat).
 * **Vliegen**: *Start missie*, *Ga naar punt* (blijft daarna hangen), *Opstijgen*,
-  *Landen* (toets L) en **NOODSTOP** (toets X, motoren uit, de drone valt!).
+  *Landen* (toets L), *Landen op de H* (toets H), *Reset omgeving* (alleen op de grond, zie
+  [Coördinatenstelsel](#coördinatenstelsel-mission-frame)) en **NOODSTOP** (toets X, motoren
+  uit, de drone valt!).
 
 **Midden: drie tabbladen** (Ctrl+1/2/3)
 * **3D-weergave**: assenkruis bij de start (x rood = vooruit, y groen = links, z blauw = hoogte),
   oranje = gepland pad, blauw = actieve missie (ook van de Jetson), groen = bereikte punten,
   roze = gevlogen spoor, het drone-modelletje draait mee met de richting en kantelt met
-  pitch/roll (rode rotors = voorkant), cyaan = plassen en wat de camera nu ziet, gekleurde
+  pitch/roll (rode rotors = voorkant), cyaan = de gevonden H en wat de camera nu ziet, gekleurde
   tegels = gemeten terrein. Slepen = draaien, scrollen = zoomen, of kies *3D*, *Boven*,
   *Zijkant* of *Achter*. De assen schuiven vloeiend mee in plaats van te verspringen.
 * **Kaart & terrein**: bovenaanzicht met de terreinkaart. **Klik** om een punt toe te voegen
   (hoogte = het z-veld), **sleep** een punt om het te verplaatsen, **rechtsklik** om het te
-  wissen, scroll om te zoomen. Plassen staan op ware grootte. Rechts de terreinanalyse,
+  wissen, scroll om te zoomen. De gevonden H staat er als cyaan cirkel. Rechts de terreinanalyse,
   onderaan het hoogteprofiel langs het gevlogen spoor. Zie [Terreinanalyse](#terreinanalyse).
 * **Sensoren**: live grafieken van hoogte (ToF, barometer, positie), terrein onder de drone,
   snelheid, houding (pitch/roll), versnelling, batterij en temperatuur. Kies het venster
@@ -107,9 +114,9 @@ van in pop-ups.
 
 ![Kaart en terrein](docs/gui_terrein.png)
 
-**Rechts**: camerabeeld (voor/onder, met of zonder detecties, opnemen voor de dataset),
+**Rechts**: camerabeeld (voor/onder, met of zonder de H-detectie, opnemen voor de dataset),
 de instrumenten (kunstmatige horizon, kompas met de vastgehouden richting, hoogtemeter met de
-grond eronder), de belangrijkste sensorwaarden en de gevonden plassen (*Vlieg naar plas*).
+grond eronder), de belangrijkste sensorwaarden en waar de H gezien is.
 
 ![Sensoren](docs/gui_sensoren.png)
 
@@ -127,39 +134,31 @@ gewoon uitgevoerd en getekend.
 | `land` / `takeoff` | – | `land` breekt ook een lopende missie af |
 | `helipad_land` | – | Test zonder pad: opstijgen (als nodig), een H onder de drone zoeken en erop landen |
 | `set_pose` | `x`, `y`, `yaw` (graden, links = positief) | Startpositie/-richting instellen (alleen op de grond) |
-| `get_puddles` | – | Antwoord: `puddle_list` |
-| `reset_puddles` | – | Plassenlijst wissen |
+| `reset` | – | Omgeving resetten (alleen op de grond): drone = (0, 0), x = richting van de neus, gevonden H en terreinkaart wissen |
 | `ping` | `t` | Antwoord: `pong` |
 
 **Drone → Jetson** (poort 9001; naar het IP waar het laatste commando vandaan kwam, of `JETSON_HOST`)
 
 | type | velden |
 |---|---|
-| `puddle` | `id`, `x`, `y` (cm, mission frame), `area_cm2`, `hits`, `mission`, `confidence` (alleen bij een model) |
-| `status` | `state`, `battery`, `pos {x,y,z,yaw}`, `odometry` (true/false), `mission`, `waypoint_index`, `puddles` (elke seconde) |
+| `status` | `state`, `battery`, `pos {x,y,z,yaw}`, `odometry` (true/false), `mission`, `waypoint_index`, `helipad` (`{x, y}` of `null`) (elke seconde) |
 | `ack` | `ref`, … |
 | `waypoint_reached` | `id`, `index`, `pos` |
-| `mission_done` / `mission_aborted` | `id`, `puddles` (volledige lijst) |
-| `puddle_list` | `puddles` |
+| `mission_done` / `mission_aborted` | `id`, `helipad` (waar de H gezien is, of `null`) |
 | `error` | `ref`, `error` |
 
-UDP kan pakketten verliezen: gebruik `mission_done` / `get_puddles` als de definitieve lijst.
+Objectdetectie (bv. plassen) zit niet in deze code: dat doet een getraind model, bv. op de
+Jetson, op de beelden van de camera.
 
 ## Hoe het werkt
 
 **Vliegen.** Zie [Nauwkeurig vliegen](#nauwkeurig-vliegen). Vóór het opstijgen worden alle
 waypoints gecontroleerd tegen een geofence (`GEOFENCE` in `drone/config.py`).
 
-**Plassen.** Op het zwart-witbeeld van de onderste camera is de vloer het grootste oppervlak,
-dus de mediaan-grijswaarde is ongeveer “droge vloer”. Natte plekken zijn duidelijk donkerder
-(`PUDDLE_MODE="dark"`) of, als er licht in weerspiegelt, juist feller (`"bright"`/`"both"`).
-Na een drempel en wat opkuisen houden we blobs over die groot en compact genoeg zijn.
-Blobs die de beeldrand raken worden genegeerd, omdat hun middelpunt dan niet klopt.
-
-**Pixel → coördinaat.** Met de hoogte uit de ToF-sensor en de beeldhoek van de camera wordt een
-pixel omgerekend naar cm. Daarna komt de positie van de drone op het moment van het beeld
-erbij (min `FRAME_LATENCY_S` vertraging). Een plas wordt pas gemeld als hij `MIN_HITS` keer
-gezien is. Detecties binnen `MERGE_RADIUS_CM` worden samengevoegd tot één plas.
+**Pixel → coördinaat** (`drone/downcam.py`). Met de hoogte uit de ToF-sensor en de beeldhoek
+van de camera wordt een pixel omgerekend naar cm. Daarna komt de positie van de drone op het
+moment van het beeld erbij (min `FRAME_LATENCY_S` vertraging). Zo wordt de plek van een H
+berekend.
 
 ## Terreinanalyse
 
@@ -255,7 +254,7 @@ drone in het midden van de H (`HELIPAD_LAND`, `drone/helipad.py`):
    `land`.
 
 De detectie werkt zonder training: een donkere H op licht papier of een lichte H op een donker
-platform, in elke richting gedraaid, vierkant of hoger dan breed. Andere vormen (plassen,
+platform, in elke richting gedraaid, vierkant of hoger dan breed. Andere vormen (vlekken,
 tegels, randen) worden niet als H gezien: in de simulator 0 valse meldingen op 350 beelden
 van de vloer. Maak de H minstens 15–20 cm groot, in een **vet lettertype zonder schreven**
 (Arial Black, of gewoon drie rechthoeken), met balken van minstens een zesde van de breedte,
@@ -312,59 +311,19 @@ door. Zet het op 0 als je wilt dat hij de hoogte altijd bijstuurt. In de vloeien
 ook als hij verder van het punt raakt in plaats van dichter. Draait de richtingcorrectie de
 verkeerde kant op, dan schakelt die zichzelf uit (zie `YAW_SIGN`).
 
-## Eigen model (Roboflow, objectdetectie)
+## Beelden opnemen (dataset voor het model)
 
-Zolang er geen model is, gebruikt het script de drempelmethode (`DETECTOR_BACKEND = "threshold"`).
-Een objectdetectiemodel geeft een **bounding box** per plas. Het script neemt het midden van
-de box als plaspositie en schat de oppervlakte als een ellips binnen de box.
-
-### 1. Beelden verzamelen
-
-Train op beelden van **dezelfde camera, hoogte en vloer** als tijdens de missie. Dat is
-belangrijker dan het aantal beelden.
+Objectdetectie gebeurt door een getraind model buiten deze code. Beelden om dat model te
+trainen neem je zo op:
 
 ```bash
 python tello_gui.py --record dataset
 ```
 
 Dit slaat 2 beelden per seconde van de onderste camera op als PNG, al bijgesneden en in
-grijswaarden (precies wat het model straks te zien krijgt). Opnemen kun je ook aan en uit
-zetten met de knop *Opnemen* in de GUI. Zo kun je een rondje vliegen boven de plassen en
-tegelijk opnemen. Vlieg op verschillende hoogtes (bv. 50–120 cm),
-met verschillende vormen en groottes van plassen, ander licht, en neem ook beelden **zonder**
-plassen op (vlekken, schaduwen, tape, kabels), zodat het model leert wat géén plas is.
-
-### 2. Roboflow
-
-1. Upload de map `dataset/` naar je Roboflow-project (type **Object Detection**).
-2. Teken boxen rond de plassen, met één klasse, bv. `puddle`. Beelden zonder plas laat je
-   leeg (Roboflow: “mark null”).
-3. Preprocessing: Auto-Orient + Resize (bv. 320×320 of 640×640). Gebruik voorzichtige
-   augmentations (helderheid, kleine rotaties, flip). Grayscale is al zo.
-4. Trainen kan op twee manieren:
-   * **In Roboflow (Roboflow Train)** → `DETECTOR_BACKEND = "roboflow"`,
-     `ROBOFLOW_MODEL_ID = "<project>/<versie>"` en je API-key in `ROBOFLOW_API_KEY` (of
-     als omgevingsvariabele). `pip install inference` downloadt het model één keer.
-     **Doe die eerste start terwijl je internet hebt**: op de Wi-Fi van de Tello is er geen internet.
-     Daarna draait het model lokaal.
-   * **Zelf met Ultralytics**: exporteer de dataset als “YOLOv8”/“YOLO11” en train, bv. in Colab:
-     `yolo detect train data=data.yaml model=yolo11n.pt imgsz=320 epochs=100`.
-     Zet `best.pt` in `models/puddles.pt` → `DETECTOR_BACKEND = "yolo"`, `MODEL_IMGSZ = 320`.
-     Dit werkt volledig offline, en later kun je hetzelfde model ook op de Jetson draaien.
-
-### 3. Testen en afstellen
-
-```bash
-python -m drone.puddle_detector dataset/ --backend yolo   # map met beelden doorlopen
-python tello_gui.py --sim                                 # (sim tekent eenvoudige plassen)
-```
-
-Instellingen in `drone/config.py`: `MODEL_CONFIDENCE` (hoger = minder valse meldingen),
-`MODEL_CLASSES` (bv. `["puddle"]`), `MIN_HITS` (hoe vaak een plas gezien moet zijn) en
-`REJECT_BORDER_BLOBS` (boxen tegen de beeldrand overslaan, omdat de plas dan half in beeld is).
-Kies een klein model (`n`), want het draait op de laptop-CPU. De detectie probeert tot
-`DETECT_HZ` = 10 keer per seconde te draaien. Een plas moet `MIN_HITS` keer gezien
-worden terwijl hij volledig in beeld is, dus vlieg trager als het model traag is.
+grijswaarden. Opnemen kun je ook aan en uit zetten met de knop *Opnemen* in de GUI. Train op
+beelden van **dezelfde camera, hoogte en vloer** als tijdens de missie: dat is belangrijker
+dan het aantal beelden.
 
 ## Kalibreren (belangrijk vóór de eerste echte vlucht)
 
@@ -381,24 +340,27 @@ worden terwijl hij volledig in beeld is, dus vlieg trager als het model traag is
    gedraaid: zet `CAM_ROTATE_DEG` (0, 90, 180 of 270). Dat wordt ook automatisch gemeten bij de
    eerste beweging van een vlucht; de log toont dan *Camerabeeld is … gedraaid* met de waarde
    die je in `drone/config.py` moet zetten.
-4. **Detectie afstellen.** Maak foto's/video van echte plassen op jullie vloer en run
-   `python -m drone.puddle_detector foto.jpg`: je ziet de gevonden plassen en het masker. Pas
-   `DARK_OFFSET`, `MIN_AREA_PX`, `MIN_SOLIDITY` en `PUDDLE_MODE` aan tot het klopt.
-5. **Richting (`YAW_SIGN`).** Zet de drone aan, open de GUI en draai de drone met de hand naar
+4. **Richting (`YAW_SIGN`).** Zet de drone aan, open de GUI en draai de drone met de hand naar
    **links**: de *Richting* in de status moet **stijgen**. Daalt hij, zet dan `YAW_SIGN = 1`.
-6. **Odometrie.** Vlieg met de stap-modus een punt 1 m vooruit. Klopt de camera-oriëntatie
+5. **Odometrie.** Vlieg met de stap-modus een punt 1 m vooruit. Klopt de camera-oriëntatie
    (stap 3) niet, dan zie je in de log "odometrie UITGESCHAKELD". Klopt de afstand niet
    (bv. de positie zegt 80 cm terwijl hij 1 m vloog), dan staat `CAM_HFOV_DEG` (stap 2)
    verkeerd: de odometrie gebruikt dezelfde beeldhoek om pixels naar cm om te rekenen.
-7. **Grote plassen.** De camera ziet op 80 cm hoogte maar ongeveer 90 × 70 cm (met 60° beeldhoek).
-   Plassen die bijna zo groot zijn als het beeld raken bijna altijd de rand en worden dan niet
-   gemeld. Vlieg hoger of zet `REJECT_BORDER_BLOBS = False` (dan minder nauwkeurige middelpunten).
 
 ## Veiligheid
 
 * Eerst testen met `--sim`, daarna met een kleine missie (`json_flights/mission_example.json`) in een lege ruimte.
 * De missie wordt geweigerd als de batterij onder `MIN_BATTERY` zit of een waypoint buiten de geofence ligt.
-* Bij een fout tijdens de missie landt de drone automatisch.
+* Bij een fout tijdens de missie landt de drone automatisch. Een ongeldig commando (waypoint
+  buiten de geofence, `set_pose` in de lucht, verkeerde snelheid) wordt geweigerd met een
+  `error`, zonder dat een hangende drone daarvoor landt.
+* *Landen*, *Abort* en de noodstop wissen ook missies die nog in de wachtrij stonden: na
+  *Landen* stijgt de drone niet vanzelf weer op voor een volgende missie.
+* Camera wisselen (voor/onder) tijdens een vlucht gebeurt pas als de drone klaar is met de
+  huidige opdracht, omdat maar één thread tegelijk met de Tello mag praten. Met de voorcamera
+  aan staan de odometrie en de H-detectie uit.
+* Zet `JETSON_HOST` op het IP van de Jetson als `LISTEN_HOST = "0.0.0.0"`: dan worden alleen
+  commando's van de Jetson aangenomen.
 * De drone heeft genoeg textuur op de vloer nodig om stabiel te hangen. Een spiegelende natte
   vloer kan de optische flow storen: test dat voorzichtig.
 * Alleen de missiethread stuurt vliegcommando's naar de Tello (djitellopy is niet thread-safe).
