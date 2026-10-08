@@ -1,7 +1,7 @@
 """
 3D view of the mission: axis cross at the start, the planned path, the flown
-trail, a small drone model (turns with yaw, tilts with pitch/roll), puddles
-and the measured terrain as coloured tiles.
+trail, a small drone model (turns with yaw, tilts with pitch/roll), the H
+landing pad seen this flight and the measured terrain as coloured tiles.
 
 Rotate by dragging, zoom with the scroll wheel. The axis limits glide to new
 values instead of jumping, and x and y always have the same scale.
@@ -107,8 +107,8 @@ class Map3D:
         self.arms = [line("-", color=C["text"], linewidth=2.5) for _ in range(2)]
         self.rotors = [line("-", color=C["danger"], linewidth=1.5) for _ in range(4)]
         self.nose = line("-", color=C["danger"], linewidth=3)
-        self.puddles = line("o", color=C["puddle"], markersize=11, alpha=0.75, linestyle="none")
-        self.footprint = line("-", color=C["puddle"], linewidth=0.8, alpha=0.5)
+        self.pad = line("s", color=C["cyan"], markersize=11, alpha=0.75, linestyle="none")
+        self.footprint = line("-", color=C["cyan"], linewidth=0.8, alpha=0.5)
 
     # ------------------------------------------------------------- view
     def set_view(self, name, draw=True):
@@ -223,12 +223,14 @@ class Map3D:
         self._set(self.drop, [(x, y, ground), (x, y, z)] if z > ground + 1 else [])
         self._set(self.shadow, [(x, y, ground)] if z > ground + 1 else [])
         self._drone(x, y, z, yaw, s.get("pitch"), s.get("roll"))
-        self._set(self.puddles, [(p["x"], p["y"], 0) for p in s["puddles"]])
+        pad = s.get("helipad")
+        pad_pts = [(pad[0], pad[1], 0)] if pad is not None else []
+        self._set(self.pad, pad_pts)
         fp = s.get("footprint")
         self._set(self.footprint, [(px, py, ground) for px, py in fp] if fp else [])
         self._terrain(s["terrain"], s["terrain_version"])
 
-        # labels: waypoint numbers (coordinates only for the selected one) + puddles
+        # labels: waypoint numbers (coordinates only for the selected one) + the H
         labels = []
         for i, p in enumerate(wps):
             text = f" {i + 1}" + (f"  ({p[0]:.0f}, {p[1]:.0f}, {p[2]:.0f})" if i == sel else "")
@@ -236,8 +238,8 @@ class Map3D:
         if show_mission:
             for i, p in enumerate(mission):
                 labels.append((p, f" M{i + 1}", C["accent"]))
-        for p in s["puddles"]:
-            labels.append(((p["x"], p["y"], 0), f" plas {p['id']}", C["puddle"]))
+        for p in pad_pts:
+            labels.append((p, " H", C["cyan"]))
         key = tuple((tuple(round(v) for v in pt), t) for pt, t, _ in labels)
         if key != self._label_key:
             self._label_key = key
@@ -247,7 +249,7 @@ class Map3D:
                             for pt, text, c in labels]
 
         self._limits(wps + mission + s["trail"][-400:] + [(x, y, z)]
-                     + [(p["x"], p["y"], 0) for p in s["puddles"]])
+                     + pad_pts)
         self.canvas.draw_idle()
 
 
@@ -256,7 +258,7 @@ def legend(parent):
     row = tk.Frame(parent, bg=C["panel"])
     for color, text in ((C["draft"], "gepland pad"), (C["accent"], "actieve missie"),
                         (C["ok"], "bereikt"), (C["trail"], "gevlogen"),
-                        (C["danger"], "drone (neus)"), (C["puddle"], "plas"),
+                        (C["danger"], "drone (neus)"), (C["cyan"], "H (landingsplaats)"),
                         ("#a16207", "terrein hoger"), ("#2563eb", "terrein lager")):
         tk.Label(row, text="●", fg=color, bg=C["panel"]).pack(side=tk.LEFT)
         tk.Label(row, text=text, fg=C["muted"], bg=C["panel"],

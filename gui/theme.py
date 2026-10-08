@@ -19,7 +19,7 @@ C = {
     "danger": "#f0545c",
     "draft": "#ff9f43",     # planned path
     "trail": "#f472b6",     # flown trail
-    "puddle": "#22d3ee",
+    "cyan": "#22d3ee",
     "terrain_hi": "#c08a4b",
     "sky": "#2f6fae",
     "ground": "#7a5532",

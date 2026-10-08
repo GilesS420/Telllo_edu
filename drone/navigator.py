@@ -65,6 +65,24 @@ class Pose:
                 self.yaw = self.reference_yaw = float(yaw)
                 self._yaw_offset = None  # re-anchored at the next IMU reading
 
+    def reset(self):
+        """
+        New mission frame from the drone itself: origin = where it is now, x = the
+        direction its nose (front camera) points now, y = left. Only on the ground.
+        """
+        with self._lock:
+            self.x = self.y = 0.0
+            self.yaw = self.reference_yaw = 0.0
+            self._yaw_offset = None   # re-anchored at the next IMU reading
+            self._seg = None
+            self._hist.clear()
+            self.measured = False
+            self.quality = 0.0
+            # a new flight gets a new chance: a wrong measurement in an earlier
+            # flight (e.g. a dark floor) must not switch the odometry off for good
+            self.vo_disabled = False
+            self.vo_validated = False
+
     def update_imu(self, imu_yaw):
         """Tello IMU yaw (deg) -> mission yaw. The first reading anchors the frame."""
         with self._lock:
