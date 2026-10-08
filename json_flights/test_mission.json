@@ -1,12 +1,20 @@
 {
   "type": "mission",
-  "id": "test-forward-back",
+  "id": "gui-4",
   "speed": 30,
   "land_at_end": true,
   "nav_mode": "go",
   "fine": "auto",
   "waypoints": [
-    [100, 0, 80],
-    [0, 0, 80]
+    [
+      100.0,
+      0.0,
+      100.0
+    ],
+    [
+      0.0,
+      0.0,
+      100.0
+    ]
   ]
 }
