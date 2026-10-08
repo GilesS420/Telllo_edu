@@ -212,6 +212,20 @@ code dat niet. Nu wordt de echte beweging gemeten (`drone/odometry.py`):
 | **Stap** (`go`) | Eén `go`-beweging per punt, berekend vanaf de *gemeten* positie. Afdrijven wordt dus bij de volgende beweging rechtgezet. | Betrouwbaar, werkt ook zonder odometrie. De drone stopt kort bij elk punt. |
 | **Vloeiend** (`rc`) | De drone wordt 15× per seconde bijgestuurd langs het pad, zonder te stoppen. Wind wordt meteen gecompenseerd. | Vloeiend en nauwkeurig, maar heeft werkende odometrie nodig. Het eerste punt gaat in stap-modus (om de odometrie te controleren). Valt de odometrie weg, dan gaat hij verder in stap-modus. |
 
+**Opstijgen en landen**: een Tello schuift bij het opstijgen en landen vaak 10–30 cm opzij,
+ook zonder wind. Met werkende odometrie corrigeert het script dat nu:
+
+* de odometrie blijft meten terwijl de drone stijgt of daalt (vroeger begon ze bij elke
+  hoogteverandering opnieuw, waardoor het afschuiven tijdens het opstijgen niet gemeten werd);
+* na het opstijgen gaat de drone terug boven de startplek (`TAKEOFF_RECENTER`);
+* aan het einde van een missie daalt hij langzaam tot `LAND_HOVER_CM` (30 cm) terwijl hij boven
+  het laatste punt blijft, pas daarna volgt de gewone `land` (`PRECISE_LAND`). De knop *Landen*
+  en een noodlanding landen meteen, zonder deze stap.
+
+In de simulator (met afschuiven bij opstijgen/landen) ging de afstand tussen start- en
+landingsplek bij “1 m vooruit en terug” van 19–59 cm naar 6–25 cm. Werkt de odometrie niet
+(GUI: *Odometrie ✖*), dan kan het script het afschuiven niet zien en dus ook niet corrigeren.
+
 **Nauwkeurig positioneren**: de Tello kan geen `go`-beweging kleiner dan 20 cm maken. Met
 kleine rc-bijsturingen zet de drone zich daarom tot op `FINE_TOL_CM` (8 cm) op het punt.
 *Automatisch* doet dat op elk punt in de stap-modus en op het laatste punt in de vloeiende
