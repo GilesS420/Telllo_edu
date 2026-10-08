@@ -1,31 +1,15 @@
 """
-Autonomous Tello EDU: follow a path (from the Jetson or entered manually) and
-report puddles seen by the downward camera.
-
-    python tello_autonomous.py                    # real drone, Jetson + manual console
-    python tello_autonomous.py --waypoints "100,0,80; 100,100,80; 0,0,80"
-    python tello_autonomous.py --mission pad.json # real drone, local mission file
-    python tello_autonomous.py --record dataset   # save downward frames for Roboflow
-    python tello_autonomous.py --sim              # simulator, no drone needed
-
-Without a Jetson, type coordinates in the terminal (type 'help'), see manual_input.py.
-
-Keys in the video window:
-    L / P  land (aborts the running mission)
-    R      start/stop recording downward frames (dataset)
-    X      EMERGENCY: motors off immediately (drone falls!)
-    ESC    land and quit
+DroneApp: the core of the autonomous Tello. Flies missions (from the GUI or the
+Jetson) and reports puddles seen by the downward camera. Started by tello_gui.py.
 
 Threads:
-    main      video window + keys + status messages
     mission   the ONLY thread that sends flight commands to the Tello
     detector  puddle detection on the downward camera
+    odometry  heading, height and visual odometry -> pose (odometry.py)
+    status    status messages to the Jetson
     link      receives Jetson messages (jetson_link.py)
-    console   manual commands typed in the terminal (manual_input.py)
 """
 
-import argparse
-import json
 import os
 import queue
 import threading
@@ -33,15 +17,15 @@ import time
 
 import cv2
 
-import config as cfg
-from jetson_link import JetsonLink
-from manual_input import ManualConsole, parse_point
-from navigator import MissionAborted, PathFollower, Pose, validate_waypoints
-from puddle_detector import PuddleTracker, create_detector, draw_detections, pixel_to_world
+from . import config as cfg
+from .jetson_link import JetsonLink
+from .navigator import MissionAborted, PathFollower, Pose, validate_waypoints
+from .odometry import Odometry
+from .puddle_detector import PuddleTracker, create_detector, draw_detections, pixel_to_world
 
 
 class DroneApp:
-    def __init__(self, tello, mission_file=None, record_dir=None):
+    def __init__(self, tello, record_dir=None):
         self.tello = tello
         self.pose = Pose()
         self.abort = threading.Event()
@@ -68,9 +52,6 @@ class DroneApp:
 
         self.link = JetsonLink(self.submit, cfg.LISTEN_HOST, cfg.LISTEN_PORT,
                                cfg.JETSON_HOST, cfg.JETSON_PORT)
-        if mission_file:
-            with open(mission_file) as f:
-                self.commands.put(json.load(f))
 
     # ------------------------------------------------------------------ setup
     def start(self):
@@ -82,6 +63,9 @@ class DroneApp:
         self.mission_thread = threading.Thread(target=self.mission_loop, daemon=True)
         self.mission_thread.start()
         threading.Thread(target=self.detect_loop, daemon=True).start()
+        self.odometry = Odometry(self.tello, self.pose, self.frame_reader, self.detector,
+                                 lambda: self.airborne)
+        threading.Thread(target=self.status_loop, daemon=True).start()
 
     def set_downvision(self, enabled):
         enabled = bool(enabled)
@@ -97,7 +81,7 @@ class DroneApp:
     # ------------------------------------------------- jetson / manual input
     def submit(self, msg):
         """
-        Entry point for every command, from the Jetson or the manual console.
+        Entry point for every command, from the GUI or the Jetson.
         Runs in the caller's thread: never send flight commands from here.
         """
         t = msg["type"]
@@ -126,10 +110,16 @@ class DroneApp:
             battery = None
         self.link.send({
             "type": "status", "state": self.state, "battery": battery,
-            "pos": {"x": round(x, 1), "y": round(y, 1), "z": round(z, 1), "yaw": yaw},
+            "pos": {"x": round(x, 1), "y": round(y, 1), "z": round(z, 1), "yaw": round(yaw, 1)},
+            "odometry": self.pose.measured,
             "mission": self.mission_id, "waypoint_index": self.waypoint_index,
             "puddles": len(self.tracker.confirmed()),
         })
+
+    def status_loop(self):
+        while self.running:
+            self.send_status()
+            time.sleep(cfg.STATUS_INTERVAL)
 
     # --------------------------------------------------------- mission thread
     def mission_loop(self):
@@ -173,8 +163,12 @@ class DroneApp:
             raise RuntimeError(f"battery too low ({battery}% < {cfg.MIN_BATTERY}%)")
         self.state = "taking_off"
         print("🚁 Opstijgen...")
-        self.tello.takeoff()
-        self.airborne = True
+        self.airborne = True  # odometry measures the drift during takeoff too
+        try:
+            self.tello.takeoff()
+        except Exception:
+            self.airborne = False
+            raise
         height = self.read_height(default=80)
         self.pose.set(z=height)
         self.state = "flying"
@@ -216,7 +210,8 @@ class DroneApp:
                             "pos": {"x": round(x, 1), "y": round(y, 1), "z": round(z, 1)}})
 
         try:
-            self.follower.fly(waypoints, speed, on_waypoint)
+            self.follower.fly(waypoints, speed, on_waypoint,
+                              mode=msg.get("nav_mode"), fine=msg.get("fine"))
         except MissionAborted:
             print("🛑 Mission aborted")
             self.link.send({"type": "mission_aborted", "id": self.mission_id,
@@ -298,42 +293,6 @@ class DroneApp:
             self._frame = frame.copy() if hasattr(frame, "copy") else frame
             self._vis = vis
 
-    # ------------------------------------------------------------ main thread
-    def run_ui(self):
-        last_status = 0
-        try:
-            while True:
-                with self._vis_lock:
-                    vis = None if self._vis is None else self._vis.copy()
-                if vis is not None:
-                    vis = cv2.resize(vis, (640, 480))
-                    x, y, z, _ = self.pose.get()
-                    lines = [f"State: {self.state}  Battery: {self.tello.get_battery()}%",
-                             f"Pos: x={x:.0f} y={y:.0f} z={z:.0f} cm",
-                             f"Puddles: {len(self.tracker.confirmed())}"
-                             + (f"  REC {self._record_count}" if self.recording else "")]
-                    for i, text in enumerate(lines):
-                        cv2.putText(vis, text, (10, 25 + 25 * i),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                    cv2.imshow("Tello autonomous (downvision)", vis)
-                key = cv2.waitKey(30) & 0xFF
-                if key == 27:                      # ESC
-                    print("Exiting...")
-                    break
-                if key in (ord("l"), ord("p")):
-                    self.submit({"type": "land"})
-                if key == ord("r"):
-                    self.toggle_recording()
-                if key == ord("x"):
-                    self.emergency_stop()
-                if time.time() - last_status > cfg.STATUS_INTERVAL:
-                    self.send_status()
-                    last_status = time.time()
-        except KeyboardInterrupt:
-            print("Interrupted by user")
-        finally:
-            self.shutdown()
-
     def shutdown(self):
         print("Cleaning up...")
         self.abort.set()
@@ -347,44 +306,4 @@ class DroneApp:
         except Exception:
             pass
         self.link.close()
-        try:
-            cv2.destroyAllWindows()
-        except cv2.error:
-            pass
         print("Drone landed and disconnected")
-
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--sim", action="store_true", help="use the simulator instead of a drone")
-    parser.add_argument("--mission", help="JSON file with a mission (same format as from the Jetson)")
-    parser.add_argument("--waypoints", help='manual path in cm, e.g. "100,0,80; 100,100,80; 0,0,80"')
-    parser.add_argument("--speed", type=int, default=cfg.DEFAULT_SPEED, help="cm/s for --waypoints")
-    parser.add_argument("--hover", action="store_true", help="don't land after --waypoints")
-    parser.add_argument("--record", metavar="DIR", help="save downward frames to DIR (dataset)")
-    parser.add_argument("--no-console", action="store_true", help="disable the manual terminal console")
-    args = parser.parse_args()
-
-    if args.sim:
-        from sim import FakeTello
-        tello = FakeTello()
-    else:
-        from djitellopy import Tello
-        Tello.RESPONSE_TIMEOUT = cfg.RESPONSE_TIMEOUT
-        tello = Tello()
-
-    app = DroneApp(tello, args.mission, args.record)
-    if args.waypoints:
-        points = [p for p in args.waypoints.split(";") if p.strip()]
-        waypoints = validate_waypoints([parse_point([p]) for p in points])
-        app.submit({"type": "mission", "id": "cli", "speed": args.speed,
-                    "land_at_end": not args.hover, "waypoints": waypoints})
-    app.start()
-    if not args.no_console:
-        ManualConsole(app)
-    app.run_ui()
-
-
-if __name__ == "__main__":
-    main()

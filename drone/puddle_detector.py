@@ -12,9 +12,9 @@ Two backends, chosen with config.DETECTOR_BACKEND:
   trained on your Roboflow dataset. See README "Eigen model".
 
 Run this file directly to test the detector on saved images, a folder or a video:
-    python puddle_detector.py capture_123.jpg
-    python puddle_detector.py dataset/
-    python puddle_detector.py flight.mp4
+    python -m drone.puddle_detector capture_123.jpg
+    python -m drone.puddle_detector dataset/
+    python -m drone.puddle_detector flight.mp4
 """
 
 import math
@@ -25,7 +25,7 @@ import time
 import cv2
 import numpy as np
 
-import config as cfg
+from . import config as cfg
 
 
 class Detection:

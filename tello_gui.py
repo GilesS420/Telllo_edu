@@ -10,13 +10,16 @@ Graphical mission control for the Tello EDU.
 * Start mission / go to point / take off / land / emergency stop
 * Live downward camera image with detections, puddle list and log
 
-Uses the same DroneApp as tello_autonomous.py, so Jetson missions still work
-while the GUI is open (they are drawn in the grid too). Everything runs
-offline (tkinter + matplotlib), so it also works on the Tello Wi-Fi.
+Uses DroneApp (drone/app.py), so Jetson missions still work while the GUI is
+open (they are drawn in the grid too). Everything runs offline (tkinter +
+matplotlib), so it also works on the Tello Wi-Fi. Missions are saved/loaded in
+json_flights/.
 """
 
 import argparse
 import json
+import math
+import os
 import queue
 import sys
 import tkinter as tk
@@ -31,11 +34,17 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg  # noqa: E402
 from matplotlib.figure import Figure  # noqa: E402
 from matplotlib.ticker import NullFormatter, ScalarFormatter  # noqa: E402
 
-import config as cfg  # noqa: E402
-from navigator import validate_waypoints  # noqa: E402
-from tello_autonomous import DroneApp  # noqa: E402
+from drone import config as cfg  # noqa: E402
+from drone.navigator import validate_waypoints  # noqa: E402
+from drone.app import DroneApp  # noqa: E402
 
 REFRESH_MS = 50
+
+# GUI label -> config value
+NAV_MODES = {"Stap (stopt bij elk punt)": "go", "Vloeiend (zonder stoppen)": "rc"}
+FINE_MODES = {"Automatisch": "auto", "Op elk punt": "all", "Alleen laatste punt": "last",
+              "Uit": "off"}
+FLIGHTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "json_flights")
 
 # Viewing angles (mission frame: x = forward, y = left, z = up)
 VIEWS = {
@@ -94,6 +103,7 @@ class TelloGUI:
         box.pack(fill=tk.X)
         self.status_vars = {}
         for key, label in (("state", "Toestand"), ("battery", "Batterij"), ("pos", "Positie"),
+                           ("heading", "Richting"), ("odo", "Odometrie"),
                            ("mission", "Missie"), ("puddles", "Plassen")):
             row = ttk.Frame(box)
             row.pack(fill=tk.X)
@@ -105,7 +115,7 @@ class TelloGUI:
         # --- waypoint entry
         box = ttk.LabelFrame(left, text="Waypoint (cm)   x = vooruit, y = links, z = hoogte",
                              padding=6)
-        box.pack(fill=tk.X, pady=(8, 0))
+        box.pack(fill=tk.X, pady=(4, 0))
         row = ttk.Frame(box)
         row.pack(fill=tk.X)
         self.entries = {}
@@ -123,8 +133,8 @@ class TelloGUI:
 
         # --- waypoint list
         box = ttk.LabelFrame(left, text="Pad", padding=6)
-        box.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
-        self.tree = ttk.Treeview(box, columns=("n", "x", "y", "z"), show="headings", height=8)
+        box.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
+        self.tree = ttk.Treeview(box, columns=("n", "x", "y", "z"), show="headings", height=5)
         for col, text, w in (("n", "#", 40), ("x", "x", 70), ("y", "y", 70), ("z", "z", 70)):
             self.tree.heading(col, text=text)
             self.tree.column(col, width=w, anchor=tk.E)
@@ -139,7 +149,7 @@ class TelloGUI:
 
         # --- mission settings
         box = ttk.LabelFrame(left, text="Missie", padding=6)
-        box.pack(fill=tk.X, pady=(8, 0))
+        box.pack(fill=tk.X, pady=(4, 0))
         row = ttk.Frame(box)
         row.pack(fill=tk.X)
         ttk.Label(row, text="Snelheid (cm/s)").pack(side=tk.LEFT)
@@ -148,6 +158,17 @@ class TelloGUI:
         ttk.Scale(row, from_=10, to=100, variable=self.speed,
                   command=lambda v: self.speed.set(int(float(v)))).pack(side=tk.LEFT, fill=tk.X,
                                                                         expand=True, padx=6)
+        for label, attr, options, default in (
+                ("Vliegmodus", "nav_mode", NAV_MODES, cfg.NAV_MODE),
+                ("Nauwkeurig positioneren", "fine", FINE_MODES, cfg.FINE_POSITION)):
+            row = ttk.Frame(box)
+            row.pack(fill=tk.X, pady=(4, 0))
+            ttk.Label(row, text=label).pack(side=tk.LEFT)
+            names = list(options)
+            var = tk.StringVar(value=next(k for k, v in options.items() if v == default))
+            ttk.Combobox(row, textvariable=var, values=names, state="readonly",
+                         width=22).pack(side=tk.RIGHT)
+            setattr(self, attr, var)
         self.land_at_end = tk.BooleanVar(value=cfg.LAND_AT_END)
         ttk.Checkbutton(box, text="Landen na het laatste punt",
                         variable=self.land_at_end).pack(anchor=tk.W, pady=(4, 0))
@@ -168,7 +189,7 @@ class TelloGUI:
 
         # --- flight buttons
         box = ttk.LabelFrame(left, text="Vliegen", padding=6)
-        box.pack(fill=tk.X, pady=(8, 0))
+        box.pack(fill=tk.X, pady=(4, 0))
         grid = ttk.Frame(box)
         grid.pack(fill=tk.X)
         buttons = (
@@ -179,11 +200,11 @@ class TelloGUI:
         )
         for text, cmd, color, r, c in buttons:
             tk.Button(grid, text=text, command=cmd, bg=color, fg="white", activebackground=color,
-                      relief=tk.FLAT, height=2).grid(row=r, column=c, sticky="ew", padx=2, pady=2)
+                      relief=tk.FLAT, pady=4).grid(row=r, column=c, sticky="ew", padx=2, pady=2)
         grid.columnconfigure(0, weight=1)
         grid.columnconfigure(1, weight=1)
         tk.Button(box, text="⚠ NOODSTOP – motoren uit (X)", command=self.emergency, bg="#c62828",
-                  fg="white", activebackground="#b71c1c", relief=tk.FLAT, height=2,
+                  fg="white", activebackground="#b71c1c", relief=tk.FLAT, pady=4,
                   font=("TkDefaultFont", 10, "bold")).pack(fill=tk.X, padx=2, pady=(4, 2))
         self.record_btn = ttk.Button(box, text="🎥 Opnemen (dataset)", command=self.toggle_record)
         self.record_btn.pack(fill=tk.X, padx=2, pady=(4, 0))
@@ -259,6 +280,7 @@ class TelloGUI:
         self.trail_line, = ax.plot([], [], [], "-", color="#c62828", linewidth=1.5,
                                    label="gevlogen")
         self.drop_line, = ax.plot([], [], [], "--", color="#555555", linewidth=1)
+        self.heading_line, = ax.plot([], [], [], "-", color="#c62828", linewidth=3)
         self.drone_pt, = ax.plot([], [], [], marker="X", color="#c62828", markersize=14,
                                  linestyle="none", label="drone")
         self.puddle_pts, = ax.plot([], [], [], "o", color="#00acc1", markersize=12, alpha=0.7,
@@ -318,6 +340,8 @@ class TelloGUI:
         self._set(self.trail_line, self.trail)
         self._set(self.drone_pt, [(x, y, z)])
         self._set(self.drop_line, [(x, y, 0), (x, y, z)] if z > 0 else [])
+        a = math.radians(pose[3])  # nose direction
+        self._set(self.heading_line, [(x, y, z), (x + 30 * math.cos(a), y + 30 * math.sin(a), z)])
         self._set(self.puddle_pts, [(p["x"], p["y"], 0) for p in puddles])
 
         # Labels: numbered points with coordinates + puddle ids (only rebuilt on change)
@@ -370,6 +394,13 @@ class TelloGUI:
         self.status_vars["state"].set(app.state + ("  ● REC" if app.recording else ""))
         self.status_vars["battery"].set(f"{battery}%")
         self.status_vars["pos"].set(f"x={x:.0f}  y={y:.0f}  z={z:.0f} cm")
+        self.status_vars["heading"].set(f"{yaw:+.0f}°   (vasthouden op {app.pose.reference_yaw:+.0f}°)")
+        if not app.airborne:
+            self.status_vars["odo"].set("– (op de grond)")
+        elif app.pose.measured:
+            self.status_vars["odo"].set(f"✔ meet de vloer (kwaliteit {app.pose.quality:.2f})")
+        else:
+            self.status_vars["odo"].set("✖ geen beeld, rekent met commando's")
         # new mission: reset the flown trail
         if app.mission_id != self.trail_mission:
             self.trail_mission = app.mission_id
@@ -519,14 +550,14 @@ class TelloGUI:
             self._refresh_tree()
 
     def save_mission(self):
-        path = filedialog.asksaveasfilename(defaultextension=".json",
+        path = filedialog.asksaveasfilename(defaultextension=".json", initialdir=FLIGHTS_DIR,
                                             filetypes=[("Missie", "*.json")])
         if path:
             with open(path, "w") as f:
                 json.dump(self._mission(self.waypoints, self.land_at_end.get()), f, indent=2)
 
     def load_mission(self):
-        path = filedialog.askopenfilename(filetypes=[("Missie", "*.json")])
+        path = filedialog.askopenfilename(initialdir=FLIGHTS_DIR, filetypes=[("Missie", "*.json")])
         if not path:
             return
         try:
@@ -536,6 +567,10 @@ class TelloGUI:
             if isinstance(data, dict):
                 self.speed.set(int(data.get("speed", self.speed.get())))
                 self.land_at_end.set(bool(data.get("land_at_end", self.land_at_end.get())))
+                for attr, options in (("nav_mode", NAV_MODES), ("fine", FINE_MODES)):
+                    label = next((k for k, v in options.items() if v == data.get(attr)), None)
+                    if label:
+                        getattr(self, attr).set(label)
         except (ValueError, KeyError, OSError) as e:
             messagebox.showerror("Laden mislukt", str(e))
             return
@@ -545,7 +580,8 @@ class TelloGUI:
     def _mission(self, waypoints, land_at_end):
         self.mission_count += 1
         return {"type": "mission", "id": f"gui-{self.mission_count}", "speed": self.speed.get(),
-                "land_at_end": land_at_end, "waypoints": [list(p) for p in waypoints]}
+                "land_at_end": land_at_end, "nav_mode": NAV_MODES[self.nav_mode.get()],
+                "fine": FINE_MODES[self.fine.get()], "waypoints": [list(p) for p in waypoints]}
 
     def start_mission(self):
         if not self.waypoints:
@@ -601,7 +637,7 @@ def main():
 
     root = tk.Tk()
     if args.sim:
-        from sim import FakeTello
+        from drone.sim import FakeTello
         tello = FakeTello()
     else:
         from djitellopy import Tello
