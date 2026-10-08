@@ -8,6 +8,7 @@ full protocol.
 import json
 import socket
 import threading
+import time
 
 
 class JetsonLink:
@@ -27,6 +28,8 @@ class JetsonLink:
         self.sock.bind((listen_host, listen_port))
         self.sock.settimeout(0.5)
         self._running = True
+        self.last_rx = None          # time of the last valid message (GUI: link status)
+        self.rx_count = self.tx_count = 0
         self._lock = threading.Lock()
         self._thread = threading.Thread(target=self._recv_loop, daemon=True)
         self._thread.start()
@@ -49,6 +52,8 @@ class JetsonLink:
                 continue
             if self.jetson_host is None or self.jetson_host == addr[0]:
                 self._last_sender = addr[0]
+            self.last_rx = time.time()
+            self.rx_count += 1
             try:
                 self.on_message(msg)
             except Exception as e:
@@ -69,6 +74,7 @@ class JetsonLink:
         with self._lock:
             try:
                 self.sock.sendto(data, target)
+                self.tx_count += 1
                 return True
             except OSError as e:
                 print(f"⚠️  Could not send to Jetson {target}: {e}")

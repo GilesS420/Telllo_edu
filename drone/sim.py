@@ -10,7 +10,10 @@ What it simulates:
 * a downward camera (30 fps, with video delay) looking at a textured floor with
   puddles at known positions, so visual odometry and puddle detection can be
   tested end-to-end
-* IMU yaw and the height sensor
+* IMU yaw, the ToF height sensor and the barometer, plus the other state
+  fields (attitude, speeds, accelerations, temperature, flight time)
+* terrain: a few boxes on the floor, so the terrain analysis (barometer minus
+  ToF) can be tested
 """
 
 import collections
@@ -25,12 +28,25 @@ from . import config as cfg
 
 # Puddles in the simulated world: (x, y, radius_x, radius_y) in cm, mission frame
 SIM_PUDDLES = [(150, 0, 25, 15), (200, 120, 20, 20), (50, 150, 20, 12)]
+# Objects on the floor: (x0, x1, y0, y1, height) in cm. The ToF sensor measures
+# the distance to their top, the barometer does not see them.
+SIM_TERRAIN = [(40, 90, 70, 130, 30),     # box under the example square path
+               (170, 240, 40, 90, 12),    # plank
+               (280, 340, -160, -100, 45)]  # crate
+SIM_BARO_M = 112.0          # barometer altitude of the floor (m above sea level)
+SIM_BARO_NOISE_CM = 6.0
 SIM_IMG_W, SIM_IMG_H = 320, 240
 TEX_RES = 0.5               # cm per texture pixel
 TEX_HALF = 600              # texture covers -600..600 cm
 RC_SCALE = 0.85             # real cm/s per rc unit (deliberately not exactly RC_CMS_PER_UNIT)
 SETTLE_S = 0.8              # the drone hovers this long after a 'go' before answering ok
 LATENCY_S = 0.15            # video delay
+
+
+def ground_height(x, y):
+    """Height of the floor/objects at (x, y) in cm."""
+    return max((h for x0, x1, y0, y1, h in SIM_TERRAIN if x0 <= x <= x1 and y0 <= y <= y1),
+               default=0.0)
 
 
 class _FrameRead:
@@ -62,6 +78,11 @@ class FakeTello:
         self._rc = (0, 0, 0, 0)
         self._rc_time = 0.0
         self._v = np.zeros(3)
+        self._acc = np.zeros(3)             # world frame, cm/s² (for the IMU/attitude)
+        self._baro_drift = 0.0
+        self._t_start = time.time()
+        self._t_takeoff = None
+        self._flight_s = 0.0
         self._frames = collections.deque(maxlen=20)
         self._texture = self._make_texture()
         self._running = True
@@ -122,7 +143,11 @@ class FakeTello:
                     yaw_rate = -yv * 1.0  # rc yaw is clockwise positive
                 if self._vz_target is not None:
                     cmd[2] = self._vz_target
-                self._v += (cmd - self._v) * min(1.0, dt / 0.25)  # inertia
+                dv = (cmd - self._v) * min(1.0, dt / 0.25)  # inertia
+                self._acc += (dv / dt - self._acc) * 0.2
+                self._v += dv
+                self._baro_drift += self.rng.normal(0, 0.15)  # slow pressure drift (cm)
+                self._baro_drift *= 0.999
                 self.x += (self._v[0] + self._wind[0]) * dt
                 self.y += (self._v[1] + self._wind[1]) * dt
                 self.z = max(0.0, self.z + self._v[2] * dt)
@@ -143,6 +168,7 @@ class FakeTello:
         while self._running:
             t0 = time.time()
             x, y, z, yaw = self.truth()
+            z = z - ground_height(x, y)   # the camera sees the top of an object
             s = max(z, 10.0) * math.tan(math.radians(cfg.CAM_HFOV_DEG) / 2) / (w / 2)
             fwd = -(v - h / 2) * s * cfg.CAM_FORWARD_SIGN * self.cam_sign
             left = -(u - w / 2) * s * cfg.CAM_LEFT_SIGN
@@ -191,6 +217,7 @@ class FakeTello:
     # --- flight ---
     def takeoff(self):
         with self._lock:
+            self._t_takeoff = time.time()
             self.is_flying = True
             self._vz_target = 60.0
         self._wait(lambda: self.z >= 80)
@@ -207,10 +234,17 @@ class FakeTello:
             self._vz_target = None
             self.is_flying = False
             self._wind[:] = 0
+            self._end_flight()
 
     def emergency(self):
         with self._lock:
             self.z, self.is_flying = 0.0, False
+            self._end_flight()
+
+    def _end_flight(self):
+        if self._t_takeoff is not None:
+            self._flight_s += time.time() - self._t_takeoff
+            self._t_takeoff = None
 
     def send_rc_control(self, lr, fb, ud, yv):
         with self._lock:
@@ -249,7 +283,37 @@ class FakeTello:
 
     def get_distance_tof(self):
         with self._lock:
-            return int(round(self.z + self.rng.normal(0, 1)))
+            d = self.z - ground_height(self.x, self.y)
+            return int(round(d + self.rng.normal(0, 1))) if d > 10 else 10  # 10 = no reading
 
     def get_height(self):
         return self.get_distance_tof()
+
+    def get_barometer(self):
+        return self.get_current_state()["baro"] * 100
+
+    def get_current_state(self):
+        """Same fields and units as the Tello state packet (djitellopy)."""
+        tof = self.get_distance_tof()
+        with self._lock:
+            c, s = math.cos(math.radians(self.yaw)), math.sin(math.radians(self.yaw))
+            body = lambda v: (v[0] * c + v[1] * s, v[0] * s - v[1] * c)  # fwd, right
+            vf, vr = body(self._v)
+            af, ar = body(self._acc)
+            flight = self._flight_s + (time.time() - self._t_takeoff if self._t_takeoff else 0)
+            warm = min((time.time() - self._t_start) / 600, 1.0)
+            baro = SIM_BARO_M + (self.z + self._baro_drift
+                                 + self.rng.normal(0, SIM_BARO_NOISE_CM)) / 100
+            return {
+                "mid": -1, "x": -100, "y": -100, "z": -100,
+                "pitch": int(round(-math.degrees(math.atan2(af, 981)) * 4)),
+                "roll": int(round(math.degrees(math.atan2(ar, 981)) * 4)),
+                "yaw": int(round(-self.yaw)),
+                "vgx": int(round(vf / 10)), "vgy": int(round(vr / 10)),
+                "vgz": int(round(-self._v[2] / 10)),
+                "templ": int(55 + 25 * warm), "temph": int(57 + 27 * warm),
+                "tof": tof, "h": int(round(self.z / 10) * 10),
+                "bat": self.battery, "baro": round(baro, 2), "time": int(flight),
+                "agx": round(af / 981 * 1000, 1), "agy": round(ar / 981 * 1000, 1),
+                "agz": round(-1000 - self._acc[2] / 981 * 1000, 1),
+            }

@@ -124,6 +124,22 @@ MERGE_RADIUS_CM = 40        # detections closer than this belong to the same pud
 MIN_HITS = 3                # seen this many times before reported to the Jetson
 
 # ---------------------------------------------------------------------------
+# Telemetry (sensor graphs in the GUI) and terrain analysis
+# Terrain: ground elevation = barometer altitude - ToF distance to the ground
+# ---------------------------------------------------------------------------
+TELEMETRY_HZ = 10           # sensor samples per second (the Tello sends ~10 state packets/s)
+TELEMETRY_HISTORY_S = 600   # keep this much history (graphs + CSV export)
+TOF_MIN_CM = 10             # the ToF sensor reports 10 when it has no valid reading
+TOF_MAX_CM = 800
+TERRAIN_ALT_SOURCE = "baro"  # "baro" (barometer) or "h" (the Tello's own height estimate)
+TERRAIN_ALT_TAU_S = 0.4     # s, smoothing of the (noisy) barometer altitude
+TERRAIN_CELL_CM = 20        # grid cell size of the terrain map
+TERRAIN_REF_SAMPLES = 15    # first samples in the air define the floor level (0 cm)
+TERRAIN_MIN_SAMPLES = 3     # a cell needs this many samples to count in the analysis
+TERRAIN_OBSTACLE_CM = 15    # higher than this above the floor = obstacle (lower = dip)
+TERRAIN_PROFILE_MAX = 6000  # samples kept for the height profile along the track
+
+# ---------------------------------------------------------------------------
 # Recording downward frames for the dataset (--record DIR or key R / 'record')
 # ---------------------------------------------------------------------------
 RECORD_DIR = "dataset"      # default folder when recording is toggled on
