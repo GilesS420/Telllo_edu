@@ -62,11 +62,12 @@ class FakeTello:
     RESPONSE_TIMEOUT = 7
 
     def __init__(self, drift=True, wind_cms=5.0, yaw_drift_dps=1.0, seed=0, flip_camera=False,
-                 vertical_drift_cms=12.0):
+                 vertical_drift_cms=12.0, camera_turn_deg=0):
         self._lock = threading.Lock()
         self.rng = np.random.default_rng(seed)
         self.drift = drift
         self.cam_sign = -1 if flip_camera else 1  # test: camera mounted the other way round
+        self.cam_turn = math.radians(camera_turn_deg)  # test: camera image turned (90/180/270)
         self.wind_std, self.yaw_std = wind_cms, yaw_drift_dps
         # a real Tello slides sideways while it takes off and lands (own downwash,
         # ground effect): a random sideways speed during takeoff and landing
@@ -178,6 +179,9 @@ class FakeTello:
             s = max(z, 10.0) * math.tan(math.radians(cfg.CAM_HFOV_DEG) / 2) / (w / 2)
             fwd = -(v - h / 2) * s * cfg.CAM_FORWARD_SIGN * self.cam_sign
             left = -(u - w / 2) * s * cfg.CAM_LEFT_SIGN
+            if self.cam_turn:   # the real mounting, independent of CAM_ROTATE_DEG
+                ct, st = math.cos(self.cam_turn), math.sin(self.cam_turn)
+                fwd, left = fwd * ct - left * st, fwd * st + left * ct
             c, sn = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
             wx = x + fwd * c - left * sn
             wy = y + fwd * sn + left * c

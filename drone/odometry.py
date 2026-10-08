@@ -20,7 +20,7 @@ import cv2
 import numpy as np
 
 from . import config as cfg
-from .puddle_detector import cm_per_pixel
+from .puddle_detector import cam_to_body, cm_per_pixel
 
 
 def wrap_deg(a):
@@ -63,8 +63,7 @@ class Odometry:
         sx, sy = shift
         # floor moves down in the image = drone moves forward, etc.
         s = cm_per_pixel(width, (height + ref["height"]) / 2)
-        fwd = sy * s * cfg.CAM_FORWARD_SIGN
-        left = sx * s * cfg.CAM_LEFT_SIGN
+        fwd, left = cam_to_body(sy * s * cfg.CAM_FORWARD_SIGN, sx * s * cfg.CAM_LEFT_SIGN)
         ky = math.radians(ref["yaw"])
         return (ref["world"][0] + fwd * math.cos(ky) - left * math.sin(ky),
                 ref["world"][1] + fwd * math.sin(ky) + left * math.cos(ky))
