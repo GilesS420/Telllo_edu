@@ -28,14 +28,15 @@ N = 48   # size of the straightened blob
 
 def _h_score(m):
     """How well a straightened N x N 0/1 mask looks like an H, 0 = perfect, None = no H."""
-    e, g0, g1 = int(0.15 * N), int(0.4 * N), int(0.6 * N)
-    t, c0, c1 = int(0.3 * N), int(0.42 * N), int(0.58 * N)
+    e, g0, g1 = int(0.1 * N), int(0.35 * N), int(0.65 * N)
+    q, c0, c1 = int(0.25 * N), int(0.3 * N), int(0.7 * N)
     best = None
     for mm in (m, m.T):   # bars vertical or horizontal in the rectangle
-        bars = min(mm[:, :e].mean(), mm[:, -e:].mean())
-        cross = mm[c0:c1, g0:g1].mean()
-        gaps = max(mm[:t, g0:g1].mean(), mm[-t:, g0:g1].mean())
-        if bars < 0.8 or cross < 0.75 or gaps > 0.15:
+        bars = min(mm[:, :e].mean(), mm[:, -e:].mean())   # two full side bars
+        rows = mm[:, g0:g1].mean(axis=1)                    # middle columns, per row
+        cross = rows[c0:c1].max()                           # a filled cross bar ...
+        gaps = max(rows[:q].mean(), rows[-q:].mean())       # ... with empty gaps around it
+        if bars < 0.65 or cross < 0.8 or gaps > 0.2:
             continue
         score = 1.0 - (min(bars, cross) - gaps)
         best = score if best is None else min(best, score)

@@ -255,22 +255,29 @@ drone in het midden van de H (`HELIPAD_LAND`, `drone/helipad.py`):
    `land`.
 
 De detectie werkt zonder training: een donkere H op licht papier of een lichte H op een donker
-platform, in elke richting gedraaid. Andere vormen (plassen, tegels, randen) worden niet als H
-gezien: in de simulator 0 valse meldingen op 350 beelden van de vloer. Maak de H minstens
-15–20 cm groot, met dikke balken (ongeveer een kwart van de breedte), en het papier wat groter
-dan de H. In de GUI zie je een gevonden H groen omlijnd in het camerabeeld. Testen op foto's:
+platform, in elke richting gedraaid, vierkant of hoger dan breed. Andere vormen (plassen,
+tegels, randen) worden niet als H gezien: in de simulator 0 valse meldingen op 350 beelden
+van de vloer. Maak de H minstens 15–20 cm groot, in een **vet lettertype zonder schreven**
+(Arial Black, of gewoon drie rechthoeken), met balken van minstens een zesde van de breedte,
+en het papier wat groter dan de H. Dunne letters of letters met voetjes (Times) worden niet
+herkend.
+
+**Controleren of hij de H ziet**: de detectie draait ook op de grond. Zet de GUI aan met
+*Onder* en *Detecties tonen*, neem de drone in je hand en houd hem 50–100 cm boven de H: een
+gevonden H krijgt een groen kader en een kruis in het midden. In de lucht schrijft het log
+`🛬 H gezien op (x, y)` als hij er een ziet. Testen op foto's (bv. opgenomen met *Opnemen*):
 
 ```bash
 python -m drone.helipad foto_van_de_h.jpg
 ```
 
-**Testen zonder pad**: de knop *Landen op H* (sneltoets `H`) stijgt op als de drone nog op de
+**Testen zonder pad**: de knop *Landen op de H* (sneltoets `H`) stijgt op als de drone nog op de
 grond staat, zoekt een H binnen `HELIPAD_RADIUS_CM` van waar hij hangt en landt erop. Leg de H
 dus op minder dan ongeveer 50 cm van de drone. Ziet hij geen H, dan landt hij gewoon ter plaatse.
 De knop *Landen* breekt het af.
 
 In de simulator (`--sim`) ligt een H op (10, −30). Een missie die op (0, 0) eindigt, landt erop,
-net als *Landen op H* vanaf de startplek.
+net als *Landen op de H* vanaf de startplek.
 
 **Resultaat in de simulator** (zelfde parcours, met wind en draaien):
 

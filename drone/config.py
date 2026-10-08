@@ -85,6 +85,8 @@ RC_GAIN = 1.2               # 1/s, speed towards the path per cm of error
 RC_YAW_GAIN = 1.5           # rc yaw units per degree heading error
 RC_HZ = 15                  # control loop rate
 RC_MIN_UNITS = 8            # smallest rc value that still moves the drone
+RC_SETTLE_S = 1.0           # wait this long after rc steering before a 'go' (otherwise the
+                            # Tello answers "error Not joystick")
 
 # Waypoints outside this box are rejected (safety)
 GEOFENCE = {
