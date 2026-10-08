@@ -227,9 +227,43 @@ landingsplek bij “1 m vooruit en terug” van 19–59 cm naar 6–25 cm. Werkt
 (GUI: *Odometrie ✖*), dan kan het script het afschuiven niet zien en dus ook niet corrigeren.
 
 **Nauwkeurig positioneren**: de Tello kan geen `go`-beweging kleiner dan 20 cm maken. Met
-kleine rc-bijsturingen zet de drone zich daarom tot op `FINE_TOL_CM` (8 cm) op het punt.
-*Automatisch* doet dat op elk punt in de stap-modus en op het laatste punt in de vloeiende
-modus.
+kleine rc-bijsturingen zet de drone zich daarom tot op `FINE_TOL_CM` (10 cm) op het punt.
+*Automatisch* doet dat alleen op het laatste punt: op elk punt bijsturen liet de drone bij
+elk waypoint heen en weer schuiven.
+
+**Minder bijsturen**: een paar cm naast het pad is niet erg, steeds bijsturen wel (elke
+correctie buigt het pad). In de vloeiende modus vliegt de drone daarom evenwijdig aan het
+pad zolang hij er minder dan `PATH_TOL_CM` (15 cm) naast zit; alleen wat daarboven zit wordt
+bijgestuurd. Hij mikt ook verder vooruit op het pad (`RC_LOOKAHEAD_CM` 40 cm), wat rustiger
+stuurt. De richting wordt pas gecorrigeerd vanaf `YAW_TOL_DEG` (6°).
+
+### Landen op een H (helipad)
+
+Ligt er een landingsplatform met een **H** in de buurt van het laatste waypoint, dan landt de
+drone in het midden van de H (`HELIPAD_LAND`, `drone/helipad.py`):
+
+1. Tijdens de vlucht en bij het eindpunt zoekt de onderste camera naar een H. Ziet hij er
+   geen, dan stijgt hij boven het eindpunt naar `HELIPAD_SEARCH_HEIGHT_CM` (150 cm), waar de
+   camera meer van de vloer ziet, en kijkt opnieuw.
+2. Een H telt alleen binnen `HELIPAD_RADIUS_CM` (80 cm) van het laatste waypoint. Anders
+   landt hij gewoon op de coördinaten.
+3. De drone stuurt zich boven het midden van de H en daalt alleen als hij erboven gecentreerd
+   is (`HELIPAD_CENTER_TOL_CM`, 6 cm). De H wordt in elk camerabeeld opnieuw gemeten, dus hij
+   blijft corrigeren tijdens het dalen.
+4. Op `HELIPAD_FINAL_CM` (40 cm), of zodra de H de helft van het beeld vult, volgt de gewone
+   `land`.
+
+De detectie werkt zonder training: een donkere H op licht papier of een lichte H op een donker
+platform, in elke richting gedraaid. Andere vormen (plassen, tegels, randen) worden niet als H
+gezien: in de simulator 0 valse meldingen op 350 beelden van de vloer. Maak de H minstens
+15–20 cm groot, met dikke balken (ongeveer een kwart van de breedte), en het papier wat groter
+dan de H. In de GUI zie je een gevonden H groen omlijnd in het camerabeeld. Testen op foto's:
+
+```bash
+python -m drone.helipad foto_van_de_h.jpg
+```
+
+In de simulator (`--sim`) ligt een H op (10, −30). Een missie die op (0, 0) eindigt, landt erop.
 
 **Resultaat in de simulator** (zelfde parcours, met wind en draaien):
 

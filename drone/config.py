@@ -39,11 +39,12 @@ LAND_AT_END = True          # land after the last waypoint (mission can override
 #   "rc": smooth flight with continuous steering (no stops), needs visual odometry
 NAV_MODE = "go"
 FINE_POSITION = "auto"      # precise positioning at waypoints: "off", "last", "all" or
-                            # "auto" (= "all" in go mode, "last" in rc mode)
+                            # "auto" (= "last": only the end point, so the drone doesn't
+                            # stop and shuffle around at every waypoint)
 Z_DEADBAND_CM = 25          # height errors smaller than this are NOT corrected: a small step
                             # in the floor changes the ToF height, the drone should not bob
                             # up and down for it (0 = always correct the height)
-FINE_TOL_CM = 8             # precise positioning: stop when closer than this
+FINE_TOL_CM = 10            # precise positioning: stop when closer than this
 FINE_TIMEOUT_S = 4          # give up precise positioning after this time
 
 # The Tello slides sideways while it takes off and lands. With working odometry:
@@ -52,15 +53,33 @@ PRECISE_LAND = True         # mission end: descend slowly while holding the spot
 LAND_HOVER_CM = 30          # ... down to this height, the last bit is the normal 'land'
 LAND_DESCENT_CMS = 25       # descent speed (cm/s) during the precise landing
 
+# Helipad: land in the middle of an "H" landing pad (drone/helipad.py)
+HELIPAD_LAND = True         # mission end: look for an H near the last waypoint and land on it
+HELIPAD_RADIUS_CM = 80      # only an H within this distance of the last waypoint counts
+                            # (the camera sees about +-45 cm around the drone at 80 cm, +-85 at 150)
+HELIPAD_SEARCH_S = 2.0      # hover this long at the end point looking for the H
+HELIPAD_SEARCH_HEIGHT_CM = 150  # not found: climb to this height (sees more floor) and look again
+HELIPAD_CLIMB_CMS = 30      # climb speed for that
+HELIPAD_CENTER_TOL_CM = 6   # only descend while the H is this close below the drone centre
+HELIPAD_FINAL_CM = 40       # centred at this height -> normal 'land' for the last bit
+HELIPAD_FINAL_SIZE = 0.5    # ... or as soon as the H is this part of the image width
+HELIPAD_DESCENT_CMS = 20    # descent speed above the H
+HELIPAD_TIMEOUT_S = 25      # give up (normal landing) after this time
+HELIPAD_MIN_AREA_PX = 300   # smallest H blob (pixels) that counts
+HELIPAD_MAX_SCORE = 0.4     # difference with an ideal H (0 = perfect), higher = looser
+
 # Heading hold: keep the nose in the start direction (IMU yaw)
 YAW_HOLD = True
-YAW_TOL_DEG = 4             # 'go' mode: rotate back when the heading is off by more than this
+YAW_TOL_DEG = 6             # 'go' mode: rotate back when the heading is off by more than this
 YAW_SIGN = -1               # Tello yaw is clockwise-positive, mission yaw counter-clockwise
                             # CHECK: rotate the drone left by hand -> GUI yaw must go UP
 
 # rc-mode controller
 RC_CMS_PER_UNIT = 1.0       # approx. speed (cm/s) per rc unit (rc goes from -100 to 100)
-RC_LOOKAHEAD_CM = 25        # follow a point this far ahead on the path (pure pursuit)
+RC_LOOKAHEAD_CM = 40        # follow a point this far ahead on the path (pure pursuit);
+                            # further = smoother, fewer corrections
+PATH_TOL_CM = 15            # rc mode: up to this far beside the path is fine, the drone just
+                            # flies parallel to it; only the part beyond this is corrected
 RC_PASS_CM = 12             # waypoint counts as passed within this distance
 RC_GAIN = 1.2               # 1/s, speed towards the path per cm of error
 RC_YAW_GAIN = 1.5           # rc yaw units per degree heading error

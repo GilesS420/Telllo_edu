@@ -1147,7 +1147,7 @@ def main():
     root = tk.Tk()
     if args.sim:
         from drone.sim import FakeTello
-        tello = FakeTello()
+        tello = FakeTello(camera_turn_deg=cfg.CAM_ROTATE_DEG)
     else:
         from djitellopy import Tello
         Tello.RESPONSE_TIMEOUT = cfg.RESPONSE_TIMEOUT

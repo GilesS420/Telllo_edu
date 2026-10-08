@@ -20,6 +20,7 @@ import time
 import cv2
 
 from . import config as cfg
+from .helipad import HelipadDetector, draw_helipad
 from .jetson_link import JetsonLink
 from .navigator import MissionAborted, PathFollower, Pose, validate_waypoints
 from .odometry import Odometry
@@ -43,6 +44,8 @@ class DroneApp:
         self.follower = PathFollower(tello, self.pose, self.abort)
         self.detector = create_detector()
         self.tracker = PuddleTracker()
+        self.pad_detector = HelipadDetector()
+        self.pads = []               # H sightings this mission: (t, x, y, size), newest last
         self._frame = None
         self._vis = None
         self._vis_lock = threading.Lock()
@@ -190,6 +193,14 @@ class DroneApp:
             return
         self.state = "landing"
         print("🛬 Landen...")
+        if spot is not None and cfg.HELIPAD_LAND:
+            try:
+                if self.land_on_helipad(spot):
+                    spot = None
+            except MissionAborted:
+                spot = None
+            except Exception as e:  # never stay in the air because of this
+                print(f"⚠️  Landen op de H mislukt ({e}), gewoon landen")
         if spot is not None and cfg.PRECISE_LAND:
             try:
                 if self.follower.descend_and_land(spot):
@@ -212,6 +223,7 @@ class DroneApp:
         self.current_waypoints = waypoints
         self.waypoints_reached = 0
         self.abort.clear()
+        self.pads = []
         print(f"🗺️  Mission {self.mission_id}: {len(waypoints)} waypoints @ {speed} cm/s")
         self.link.send({"type": "ack", "ref": "mission", "id": self.mission_id,
                         "waypoints": len(waypoints)})
@@ -242,6 +254,100 @@ class DroneApp:
                         "puddles": self.tracker.confirmed()})
         if land_at_end:
             self.safe_land(spot=waypoints[-1][:2])
+
+    def _pad_near(self, xy, since):
+        """Newest H sighting after time `since` within HELIPAD_RADIUS_CM of xy, or None."""
+        for t, x, y, size in reversed(self.pads):
+            if t < since:
+                break
+            if math.hypot(x - xy[0], y - xy[1]) <= cfg.HELIPAD_RADIUS_CM:
+                return t, x, y, size
+        return None
+
+    def _look_for_pad(self, end_xy, climb_cms):
+        """Hover (or climb to HELIPAD_SEARCH_HEIGHT_CM) while looking for the H."""
+        t_end = time.time() + cfg.HELIPAD_SEARCH_S
+        if climb_cms:
+            t_end += 6
+        try:
+            while time.time() < t_end:
+                self.follower._check_abort()
+                found = self._pad_near(end_xy, 0)
+                if found:
+                    return found
+                x, y, z, _ = self.pose.get()
+                vz = climb_cms if climb_cms and z < cfg.HELIPAD_SEARCH_HEIGHT_CM else 0
+                # stay above the end point (otherwise the drone drifts away while looking)
+                vx, vy = (cfg.RC_GAIN * (e - c) for e, c in zip(end_xy, (x, y)))
+                n = math.hypot(vx, vy)
+                if n > 15:
+                    vx, vy = vx * 15 / n, vy * 15 / n
+                self.follower.send_velocity(vx, vy, vz)
+                time.sleep(0.1)
+            return None
+        finally:
+            self.tello.send_rc_control(0, 0, 0, 0)
+
+    def land_on_helipad(self, end_xy):
+        """
+        Look for an H near the end point, steer above its centre and descend.
+        The H position is measured again in every camera frame, so the drone
+        keeps correcting while it comes down. Returns False when there is no H
+        (nothing done), True when the drone is low above the H (or gave up
+        there) and only the final 'land' is left.
+        """
+        f = self.follower
+        sighting = self._pad_near(end_xy, 0)
+        if sighting is None:   # not seen on the way: hover at the end point and look
+            sighting = self._look_for_pad(end_xy, 0.0)
+        if sighting is None and self.pose.get()[2] < cfg.HELIPAD_SEARCH_HEIGHT_CM - 15:
+            # higher up the camera sees a bigger part of the floor
+            print(f"🔎 Geen H in beeld: stijgen naar {cfg.HELIPAD_SEARCH_HEIGHT_CM} cm om te zoeken")
+            sighting = self._look_for_pad(end_xy, cfg.HELIPAD_CLIMB_CMS)
+        if sighting is None:
+            print("ℹ️  Geen H gevonden bij het eindpunt: landen op de coördinaten")
+            return False
+        t_seen, tx, ty, size = sighting
+        print(f"🅷 H gevonden op ({tx:.0f}, {ty:.0f}): erboven centreren en dalen")
+        period = 1.0 / cfg.RC_HZ
+        deadline = time.time() + cfg.HELIPAD_TIMEOUT_S
+        try:
+            while time.time() < deadline:
+                f._check_abort()
+                new = self._pad_near(end_xy, t_seen + 1e-6)
+                if new:   # fresh measurement of the H (smoothed a little)
+                    t_seen, size = new[0], new[3]
+                    tx, ty = 0.4 * tx + 0.6 * new[1], 0.4 * ty + 0.6 * new[2]
+                x, y, z, _ = self.pose.get()
+                ex, ey = tx - x, ty - y
+                err = math.hypot(ex, ey)
+                lost = time.time() - t_seen
+                if lost > 3.0 and not self.pose.measured:
+                    print("⚠️  H en odometrie kwijt: hier landen")
+                    return True
+                # low enough, or the H almost fills the image (lower it would
+                # get cut off by the image edge and can't be seen any more)
+                big = size >= cfg.HELIPAD_FINAL_SIZE and lost < 1.0
+                if err < cfg.HELIPAD_CENTER_TOL_CM and (z <= cfg.HELIPAD_FINAL_CM or big):
+                    print(f"🎯 Boven het midden van de H ({err:.0f} cm ernaast)")
+                    return True
+                if lost > 5.0 and err < cfg.FINE_TOL_CM:
+                    print("ℹ️  H niet meer te zien: landen op de laatst gemeten plek")
+                    return True
+                # only come down while centred and the H is in view; otherwise
+                # hold the height and steer back above it
+                centred = err < cfg.HELIPAD_CENTER_TOL_CM * (2 if z > 60 else 1)
+                vz = -cfg.HELIPAD_DESCENT_CMS if centred and lost < 1.0 else 0.0
+                vx, vy = cfg.RC_GAIN * ex, cfg.RC_GAIN * ey
+                n = math.hypot(vx, vy)
+                if n > 15:
+                    vx, vy = vx * 15 / n, vy * 15 / n
+                f.send_velocity(vx, vy, vz, min_units=0 if centred else cfg.RC_MIN_UNITS)
+                time.sleep(period)
+            print(f"ℹ️  H: na {cfg.HELIPAD_TIMEOUT_S}s nog niet gecentreerd, hier landen")
+            return True
+        finally:
+            self.tello.send_rc_control(0, 0, 0, 0)
 
     def read_height(self, default):
         """Height above the floor from the ToF sensor (cm), fallback to default."""
@@ -300,16 +406,26 @@ class DroneApp:
             self.record_frame(gray)
         height = self.read_height(default=pose[2])
         active = self.airborne and self.state == "flying" and height >= cfg.MIN_DETECT_HEIGHT
+        pad = None
+        if cfg.HELIPAD_LAND and self.airborne and height >= 15:
+            pad = self.pad_detector.find(gray)
+            if pad is not None:
+                h, w = gray.shape
+                x, y, _ = pixel_to_world(pad.cx, pad.cy, w, h, height, pose)
+                self.pads.append((t_frame, x, y, pad.size_px / w))
+                del self.pads[:-50]
         if active:
             h, w = gray.shape
             for d in dets:
+                if pad is not None and math.hypot(d.cx - pad.cx, d.cy - pad.cy) < pad.size_px:
+                    continue  # the H itself is not a puddle
                 x, y, s = pixel_to_world(d.cx, d.cy, w, h, height, pose)
                 report = self.tracker.add(x, y, d.area_px * s * s)
                 if report:
                     print(f"💧 Plas #{report['id']} op x={report['x']} y={report['y']} "
                           f"({report['area_cm2']:.0f} cm²)")
                     self.link.send({"type": "puddle", "mission": self.mission_id, **report})
-        vis = draw_detections(gray, dets if active else [])
+        vis = draw_helipad(draw_detections(gray, dets if active else []), pad)
         with self._vis_lock:
             self._frame = frame.copy() if hasattr(frame, "copy") else frame
             self._vis = vis

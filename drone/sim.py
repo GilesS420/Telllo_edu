@@ -33,6 +33,8 @@ SIM_PUDDLES = [(150, 0, 25, 15), (200, 120, 20, 20), (50, 150, 20, 12)]
 SIM_TERRAIN = [(40, 90, 70, 130, 30),     # box under the example square path
                (170, 240, 40, 90, 12),    # plank
                (280, 340, -160, -100, 45)]  # crate
+# Landing pad: white paper with a black H, (x, y, paper size, H size, rotation deg)
+SIM_HELIPAD = (10, -30, 42, 26, 20)
 SIM_BARO_M = 112.0          # barometer altitude of the floor (m above sea level)
 SIM_BARO_NOISE_CM = 6.0
 SIM_IMG_W, SIM_IMG_H = 320, 240
@@ -109,6 +111,17 @@ class FakeTello:
             xx, yy = np.meshgrid(coords[r0:r1], coords[c0:c1], indexing="ij")
             inside = ((xx - px) / rx) ** 2 + ((yy - py) / ry) ** 2 <= 1
             tex[r0:r1, c0:c1][inside] -= 80
+        if SIM_HELIPAD:
+            px, py, paper, hs, rot = SIM_HELIPAD
+            ii, jj = np.meshgrid(coords, coords, indexing="ij")   # world x, world y
+            a = math.radians(rot)
+            u = (ii - px) * math.cos(a) + (jj - py) * math.sin(a)
+            v = -(ii - px) * math.sin(a) + (jj - py) * math.cos(a)
+            tex[(abs(u) <= paper / 2) & (abs(v) <= paper / 2)] = 225
+            bar = hs / 4
+            h_mask = (abs(u) <= hs / 2) & (abs(v) <= hs / 2) & (
+                (abs(v) >= hs / 2 - bar) | (abs(u) <= bar * 0.45))
+            tex[h_mask] = 40
         return tex
 
     def truth(self):
