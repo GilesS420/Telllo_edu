@@ -83,7 +83,7 @@ AUTO_CROP = True            # auto-detect black borders around the bottom image
 CAM_HFOV_DEG = 60.0         # horizontal field of view of the bottom camera
 CAM_FORWARD_SIGN = 1        # 1: top of image = drone forward, -1: flipped
 CAM_LEFT_SIGN = 1           # 1: left of image = drone left,   -1: flipped
-CAM_ROTATE_DEG = 0          # camera image turned 0/90/180/270 deg relative to the drone.
+CAM_ROTATE_DEG = 270          # camera image turned 0/90/180/270 deg relative to the drone.
                             # Detected automatically on the first move of a flight
                             # (log: "Camerabeeld is ... gedraaid"); put that value here.
 CAM_OFFSET_CM = (0.0, 0.0)  # camera position relative to drone centre (fwd, left)
