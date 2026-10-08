@@ -6,6 +6,7 @@ Threads:
     mission   the ONLY thread that sends flight commands to the Tello
     detector  puddle detection on the downward camera
     odometry  heading, height and visual odometry -> pose (odometry.py)
+    telemetry all sensor values + terrain map, for the GUI (telemetry.py)
     status    status messages to the Jetson
     link      receives Jetson messages (jetson_link.py)
 """
@@ -22,6 +23,7 @@ from .jetson_link import JetsonLink
 from .navigator import MissionAborted, PathFollower, Pose, validate_waypoints
 from .odometry import Odometry
 from .puddle_detector import PuddleTracker, create_detector, draw_detections, pixel_to_world
+from .telemetry import Telemetry
 
 
 class DroneApp:
@@ -65,6 +67,7 @@ class DroneApp:
         threading.Thread(target=self.detect_loop, daemon=True).start()
         self.odometry = Odometry(self.tello, self.pose, self.frame_reader, self.detector,
                                  lambda: self.airborne)
+        self.telemetry = Telemetry(self.tello, self.pose, lambda: self.airborne)
         threading.Thread(target=self.status_loop, daemon=True).start()
 
     def set_downvision(self, enabled):
@@ -272,6 +275,11 @@ class DroneApp:
         cv2.imwrite(path, gray)
         self._record_count += 1
 
+    def latest_vis(self):
+        """Last processed downward image with the detections drawn (BGR), or None."""
+        with self._vis_lock:
+            return self._vis
+
     def process_frame(self, frame, t_frame):
         pose = self.pose.get(t_frame - cfg.FRAME_LATENCY_S)
         dets, gray, _ = self.detector.detect(frame)
@@ -297,6 +305,8 @@ class DroneApp:
         print("Cleaning up...")
         self.abort.set()
         self.running = False
+        if hasattr(self, "telemetry"):
+            self.telemetry.stop()
         # Wait until the mission thread finished its current move, so only one
         # thread talks to the Tello at a time.
         self.mission_thread.join(timeout=cfg.RESPONSE_TIMEOUT)
