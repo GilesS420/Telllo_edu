@@ -11,6 +11,7 @@ Threads:
     link      receives Jetson messages (jetson_link.py)
 """
 
+import math
 import os
 import queue
 import threading
@@ -166,6 +167,7 @@ class DroneApp:
             raise RuntimeError(f"battery too low ({battery}% < {cfg.MIN_BATTERY}%)")
         self.state = "taking_off"
         print("🚁 Opstijgen...")
+        x0, y0, _, _ = self.pose.get()
         self.airborne = True  # odometry measures the drift during takeoff too
         try:
             self.tello.takeoff()
@@ -175,14 +177,25 @@ class DroneApp:
         height = self.read_height(default=80)
         self.pose.set(z=height)
         self.state = "flying"
-        print(f"✅ In de lucht op {height} cm")
+        x, y, _, _ = self.pose.get()
+        print(f"✅ In de lucht op {height} cm ({x - x0:+.0f}, {y - y0:+.0f} cm verschoven)")
+        if cfg.TAKEOFF_RECENTER and self.pose.measured and math.hypot(x - x0, y - y0) > 3:
+            print("↩️  Terug boven de startplek")
+            self.follower.hold_position((x0, y0, height))
 
-    def safe_land(self):
+    def safe_land(self, spot=None):
+        """Land. With spot=(x, y) and working odometry: precise landing on that spot."""
         if not self.airborne:
             self.state = "idle"
             return
         self.state = "landing"
         print("🛬 Landen...")
+        if spot is not None and cfg.PRECISE_LAND:
+            try:
+                if self.follower.descend_and_land(spot):
+                    print("🎯 Precies boven het landingspunt gedaald")
+            except Exception as e:  # never stay in the air because of this
+                print(f"⚠️  Precies landen mislukt ({e}), gewoon landen")
         try:
             self.tello.land()
         except Exception as e:
@@ -228,7 +241,7 @@ class DroneApp:
         self.link.send({"type": "mission_done", "id": self.mission_id,
                         "puddles": self.tracker.confirmed()})
         if land_at_end:
-            self.safe_land()
+            self.safe_land(spot=waypoints[-1][:2])
 
     def read_height(self, default):
         """Height above the floor from the ToF sensor (cm), fallback to default."""

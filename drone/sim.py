@@ -61,12 +61,17 @@ class _FrameRead:
 class FakeTello:
     RESPONSE_TIMEOUT = 7
 
-    def __init__(self, drift=True, wind_cms=5.0, yaw_drift_dps=1.0, seed=0, flip_camera=False):
+    def __init__(self, drift=True, wind_cms=5.0, yaw_drift_dps=1.0, seed=0, flip_camera=False,
+                 vertical_drift_cms=12.0):
         self._lock = threading.Lock()
         self.rng = np.random.default_rng(seed)
         self.drift = drift
         self.cam_sign = -1 if flip_camera else 1  # test: camera mounted the other way round
         self.wind_std, self.yaw_std = wind_cms, yaw_drift_dps
+        # a real Tello slides sideways while it takes off and lands (own downwash,
+        # ground effect): a random sideways speed during takeoff and landing
+        self.vertical_drift = vertical_drift_cms if drift else 0.0
+        self._vdrift = np.zeros(2)
         self.x = self.y = self.z = 0.0
         self.yaw = 0.0                      # true heading, mission convention (CCW +)
         self.is_flying = False
@@ -143,6 +148,7 @@ class FakeTello:
                     yaw_rate = -yv * 1.0  # rc yaw is clockwise positive
                 if self._vz_target is not None:
                     cmd[2] = self._vz_target
+                    cmd[:2] += self._vdrift
                 dv = (cmd - self._v) * min(1.0, dt / 0.25)  # inertia
                 self._acc += (dv / dt - self._acc) * 0.2
                 self._v += dv
@@ -220,15 +226,21 @@ class FakeTello:
             self._t_takeoff = time.time()
             self.is_flying = True
             self._vz_target = 60.0
+            self._vdrift = self._random_drift()
         self._wait(lambda: self.z >= 80)
         with self._lock:
             self._vz_target = None
         time.sleep(SETTLE_S)
 
+    def _random_drift(self):
+        a = self.rng.uniform(0, 2 * math.pi)
+        return np.array([math.cos(a), math.sin(a)]) * self.vertical_drift
+
     def land(self):
         with self._lock:
             self._go = None
             self._vz_target = -50.0
+            self._vdrift = self._random_drift()
         self._wait(lambda: self.z <= 0.5)
         with self._lock:
             self._vz_target = None

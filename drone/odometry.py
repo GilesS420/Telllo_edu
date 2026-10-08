@@ -115,7 +115,19 @@ class Odometry:
                     if (key is None or key["img"].shape != g.shape
                             or abs(wrap_deg(yaw - key["yaw"])) > cfg.VO_MAX_YAW_STEP
                             or abs(height / key["height"] - 1) > 0.12):
-                        # turned or climbed: the old keyframe can't be compared anymore
+                        # turned or climbed: the old keyframe can't be compared anymore.
+                        # While climbing/descending (takeoff, landing, over a box) the
+                        # previous frame is still close enough: measure that last step
+                        # first, so the drift during a height change is not lost.
+                        if (prev is not None and prev["img"].shape == g.shape
+                                and abs(wrap_deg(yaw - prev["yaw"])) <= cfg.VO_MAX_YAW_STEP
+                                and abs(height / prev["height"] - 1) <= 0.12):
+                            shift, quality = self._compare(prev, g)
+                            if quality >= cfg.VO_MIN_RESPONSE:
+                                new = self._position(prev, shift, g.shape[1], height)
+                                vo = (new[0] - world[0], new[1] - world[1])
+                                world = new
+                                last_good = t0
                         key = prev = dict(current, world=world)
                     else:
                         # 1) against the keyframe, 2) if that fails against the previous frame
