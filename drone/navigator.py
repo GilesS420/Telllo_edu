@@ -50,6 +50,7 @@ class Pose:
         self.quality = 0.0      # last phase correlation response (for the GUI)
         self.vo_disabled = False  # set when the odometry contradicts the commands
         self.vo_validated = False  # odometry matched at least one commanded move
+        self.cam_turn_checked = False  # camera rotation auto-correction used
 
     def set(self, x=None, y=None, z=None, yaw=None):
         with self._lock:
@@ -105,13 +106,29 @@ class Pose:
         if 0.4 * c < along < 2.5 * c:
             self.vo_validated = True
             return
+        # The measured move points the wrong way. If it has the right length and is
+        # turned by 90/180/270 deg, the camera image is simply mounted turned:
+        # correct that once (first check of the flight) instead of giving up.
+        m = math.hypot(mx, my)
+        turn = math.degrees(math.atan2(cy, cx) - math.atan2(my, mx))
+        quarter = round(turn / 90) * 90
+        if (not self.vo_validated and not self.cam_turn_checked and 0.4 * c < m < 2.5 * c
+                and abs(wrap_deg(turn - quarter)) < 25 and quarter % 360):
+            self.cam_turn_checked = True
+            cfg.CAM_ROTATE_DEG = int((cfg.CAM_ROTATE_DEG + quarter) % 360)
+            self.vo_validated = True
+            self.x, self.y = seg["end"][0], seg["end"][1]
+            print(f"🔄 Camerabeeld is {wrap_deg(quarter):+.0f}° gedraaid t.o.v. de drone: "
+                  f"gecorrigeerd. Zet CAM_ROTATE_DEG = {cfg.CAM_ROTATE_DEG} in drone/config.py")
+            return
         # Never trust it again this flight: a wrong camera direction would make
         # every correction push the drone further away.
         self.vo_disabled = True
         self.measured = False
         self.x, self.y = seg["end"][0], seg["end"][1]
         print(f"⚠️  Odometrie mat {along:.0f} cm voor een beweging van {c:.0f} cm: odometrie "
-              "UITGESCHAKELD. Controleer CAM_FORWARD_SIGN / CAM_LEFT_SIGN / CAM_HFOV_DEG.")
+              "UITGESCHAKELD. Controleer CAM_ROTATE_DEG / CAM_FORWARD_SIGN / CAM_LEFT_SIGN / "
+              "CAM_HFOV_DEG.")
 
     def cancel_move(self):
         with self._lock:
@@ -274,6 +291,8 @@ class PathFollower:
             self.correct_yaw()
             x, y, z, _ = self.pose.get()
             dx, dy, dz = target[0] - x, target[1] - y, target[2] - z
+            if abs(dz) < cfg.Z_DEADBAND_CM:
+                dz = 0.0     # small floor step: keep flying level, don't chase the ToF
             # The Tello can't do moves where every axis is < 20 cm. The remaining
             # error is not lost: the pose keeps the real position, so the next
             # move (or precise positioning) corrects for it.
@@ -322,6 +341,8 @@ class PathFollower:
                 self.tello.send_rc_control(0, 0, 0, 0)
                 raise OdometryLost()  # not making progress: use 'go' for the rest
             x, y, z, _ = self.pose.get()
+            if abs(z - target[2]) < cfg.Z_DEADBAND_CM:
+                z = target[2]    # small floor step: fly level, don't chase the ToF height
             p = (x, y, z)
             to_target = math.dist(p, target)
             if to_target < (cfg.FINE_TOL_CM if stop_at_end else cfg.RC_PASS_CM):
@@ -382,17 +403,29 @@ class PathFollower:
         """Precise positioning on a waypoint with small rc corrections."""
         if not self.pose.measured:
             return
-        deadline = time.time() + cfg.FINE_TIMEOUT_S
+        t0 = time.time()
+        deadline = t0 + cfg.FINE_TIMEOUT_S
         period = 1.0 / cfg.RC_HZ
         max_speed = 20.0
         ex = ey = 0.0
+        e0 = None
         try:
             while time.time() < deadline:
                 self._check_abort()
                 if not self.pose.measured:
                     return
+                x, y, _, _ = self.pose.get()
+                e = math.hypot(target[0] - x, target[1] - y)
+                e0 = e if e0 is None else e0
+                # safety: the error must shrink. If not, the camera direction is
+                # wrong (not yet checked this flight): stop instead of wandering off.
+                if e > e0 + 15 or (time.time() - t0 > 2.5 and e > 0.9 * e0 + 5):
+                    print("⚠️  Nauwkeurig positioneren komt niet dichter: gestopt")
+                    return
                 x, y, z, _ = self.pose.get()
                 ex, ey, ez = target[0] - x, target[1] - y, target[2] - z
+                if abs(ez) < cfg.Z_DEADBAND_CM:
+                    ez = 0.0
                 if math.hypot(ex, ey) < cfg.FINE_TOL_CM and abs(ez) < 1.5 * cfg.FINE_TOL_CM:
                     return
                 v = [cfg.RC_GAIN * e for e in (ex, ey, ez)]

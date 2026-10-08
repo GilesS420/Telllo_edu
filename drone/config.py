@@ -40,6 +40,9 @@ LAND_AT_END = True          # land after the last waypoint (mission can override
 NAV_MODE = "go"
 FINE_POSITION = "auto"      # precise positioning at waypoints: "off", "last", "all" or
                             # "auto" (= "all" in go mode, "last" in rc mode)
+Z_DEADBAND_CM = 25          # height errors smaller than this are NOT corrected: a small step
+                            # in the floor changes the ToF height, the drone should not bob
+                            # up and down for it (0 = always correct the height)
 FINE_TOL_CM = 8             # precise positioning: stop when closer than this
 FINE_TIMEOUT_S = 4          # give up precise positioning after this time
 
@@ -80,6 +83,9 @@ AUTO_CROP = True            # auto-detect black borders around the bottom image
 CAM_HFOV_DEG = 60.0         # horizontal field of view of the bottom camera
 CAM_FORWARD_SIGN = 1        # 1: top of image = drone forward, -1: flipped
 CAM_LEFT_SIGN = 1           # 1: left of image = drone left,   -1: flipped
+CAM_ROTATE_DEG = 0          # camera image turned 0/90/180/270 deg relative to the drone.
+                            # Detected automatically on the first move of a flight
+                            # (log: "Camerabeeld is ... gedraaid"); put that value here.
 CAM_OFFSET_CM = (0.0, 0.0)  # camera position relative to drone centre (fwd, left)
 FRAME_LATENCY_S = 0.2       # video delay; puddle position uses pose at t - latency
 
