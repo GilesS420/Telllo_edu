@@ -206,6 +206,12 @@ class TelloGUI:
         self.land_at_end = tk.BooleanVar(value=cfg.LAND_AT_END)
         ttk.Checkbutton(box, text="Landen na het laatste punt",
                         variable=self.land_at_end).pack(anchor=tk.W, pady=(6, 0))
+        self.level = tk.BooleanVar(value=False)
+        ttk.Checkbutton(box, text="Zelfde hoogte houden (vloer niet volgen)",
+                        variable=self.level).pack(anchor=tk.W, pady=(4, 0))
+        self.helipad_search = tk.BooleanVar(value=False)
+        ttk.Checkbutton(box, text="Landen op gevonden H (anders 1e punt)",
+                        variable=self.helipad_search).pack(anchor=tk.W, pady=(4, 0))
 
         # --- waypoint entry
         outer, _, box = card(left, "Waypoint (cm)")
@@ -952,6 +958,8 @@ class TelloGUI:
                 self.speed.set(int(data.get("speed", self.speed.get())))
                 self._speed_changed(self.speed.get())
                 self.land_at_end.set(bool(data.get("land_at_end", self.land_at_end.get())))
+                self.level.set(bool(data.get("level", False)))
+                self.helipad_search.set(bool(data.get("helipad_search", False)))
                 for attr, options in (("nav_mode", NAV_MODES), ("fine", FINE_MODES)):
                     label = next((k for k, v in options.items() if v == data.get(attr)), None)
                     if label:
@@ -1014,7 +1022,9 @@ class TelloGUI:
         self.mission_count += 1
         return {"type": "mission", "id": f"gui-{self.mission_count}", "speed": self.speed.get(),
                 "land_at_end": land_at_end, "nav_mode": NAV_MODES[self.nav_mode.get()],
-                "fine": FINE_MODES[self.fine.get()], "waypoints": [list(p) for p in waypoints]}
+                "fine": FINE_MODES[self.fine.get()], "level": self.level.get(),
+                "helipad_search": self.helipad_search.get() and land_at_end,
+                "waypoints": [list(p) for p in waypoints]}
 
     def start_mission(self):
         if not self.waypoints:
