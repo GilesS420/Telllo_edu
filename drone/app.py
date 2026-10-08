@@ -242,6 +242,10 @@ class DroneApp:
         waypoints = validate_waypoints(msg["waypoints"])
         speed = msg.get("speed", cfg.DEFAULT_SPEED)
         land_at_end = msg.get("land_at_end", cfg.LAND_AT_END)
+        # level: keep the height after takeoff, don't follow the floor (ToF)
+        # helipad_search: land on an H seen anywhere on the way, else on the first point
+        self.follower.level = bool(msg.get("level", False))
+        helipad_search = bool(msg.get("helipad_search", False))
         self.mission_id = msg.get("id")
         self.current_waypoints = waypoints
         self.waypoints_reached = 0
@@ -275,8 +279,40 @@ class DroneApp:
         print("🏁 Mission complete")
         self.link.send({"type": "mission_done", "id": self.mission_id,
                         "puddles": self.tracker.confirmed()})
-        if land_at_end:
-            self.safe_land(spot=waypoints[-1][:2])
+        try:
+            if land_at_end and helipad_search:
+                self.land_on_seen_helipad(waypoints[0], speed)
+            elif land_at_end:
+                self.safe_land(spot=waypoints[-1][:2])
+        except MissionAborted:
+            self.safe_land()
+        finally:
+            self.follower.level = False
+
+    def seen_helipad(self):
+        """Position of the H seen during this mission (median of the sightings), or None."""
+        if not self.pads:
+            return None
+        xs = sorted(p[1] for p in self.pads)
+        ys = sorted(p[2] for p in self.pads)
+        return xs[len(xs) // 2], ys[len(ys) // 2]
+
+    def land_on_seen_helipad(self, first_wp, speed):
+        """
+        End of a helipad_search mission: fly back to where the H was seen and land
+        on it. No H seen during the whole flight: fly back to the first waypoint and
+        land there.
+        """
+        z = self.pose.get()[2]
+        pad = self.seen_helipad()
+        if pad is not None:
+            print(f"🛬 H gezien tijdens de vlucht: terug naar ({pad[0]:.0f}, {pad[1]:.0f})")
+            self.follower.move_to((pad[0], pad[1], z), speed)
+            self.safe_land(spot=pad)
+        else:
+            print("ℹ️  Geen H gezien tijdens de vlucht: landen op het eerste punt")
+            self.follower.move_to((first_wp[0], first_wp[1], z), speed)
+            self.safe_land(spot=first_wp[:2], helipad=False)
 
     def _pad_near(self, xy, since):
         """Newest H sighting after time `since` within HELIPAD_RADIUS_CM of xy, or None."""
@@ -449,7 +485,7 @@ class DroneApp:
             if not self.pads or t_frame - self.pads[-1][0] > 5:
                 print(f"🛬 H gezien op ({x:.0f}, {y:.0f})")
             self.pads.append((t_frame, x, y, pad.size_px / w))
-            del self.pads[:-50]
+            del self.pads[:-200]
         if active:
             h, w = gray.shape
             for d in dets:

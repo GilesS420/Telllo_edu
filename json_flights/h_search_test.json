@@ -1,0 +1,16 @@
+{
+  "type": "mission",
+  "id": "h-search",
+  "speed": 30,
+  "land_at_end": true,
+  "nav_mode": "go",
+  "fine": "auto",
+  "level": true,
+  "helipad_search": true,
+  "waypoints": [
+    [150.0, 0.0, 80.0],
+    [150.0, -150.0, 80.0],
+    [0.0, -150.0, 80.0],
+    [0.0, 0.0, 80.0]
+  ]
+}

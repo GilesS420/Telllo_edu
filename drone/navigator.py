@@ -216,6 +216,7 @@ class PathFollower:
         self.abort = abort_event
         self.yaw_hold = cfg.YAW_HOLD
         self._last_rc = 0.0
+        self.level = False   # True: never correct the height (fly level, ignore the floor)
         if cfg.MAX_STEP_CM < 40 or cfg.MAX_STEP_CM > 500:
             raise ValueError("MAX_STEP_CM must be between 40 and 500")
 
@@ -243,6 +244,10 @@ class PathFollower:
                 print("ℹ️  Tello nog bezig met de vorige beweging: even wachten en opnieuw")
                 self.tello.send_rc_control(0, 0, 0, 0)
                 time.sleep(1.5)
+
+    def _dz(self, dz):
+        """Height error to correct: none within Z_DEADBAND_CM, none at all when flying level."""
+        return 0.0 if self.level or abs(dz) < cfg.Z_DEADBAND_CM else dz
 
     def _check_abort(self):
         if self.abort.is_set():
@@ -316,9 +321,8 @@ class PathFollower:
             self._check_abort()
             self.correct_yaw()
             x, y, z, _ = self.pose.get()
-            dx, dy, dz = target[0] - x, target[1] - y, target[2] - z
-            if abs(dz) < cfg.Z_DEADBAND_CM:
-                dz = 0.0     # small floor step: keep flying level, don't chase the ToF
+            dx, dy = target[0] - x, target[1] - y
+            dz = self._dz(target[2] - z)   # small floor step: keep flying level
             # The Tello can't do moves where every axis is < 20 cm. The remaining
             # error is not lost: the pose keeps the real position, so the next
             # move (or precise positioning) corrects for it.
@@ -367,7 +371,7 @@ class PathFollower:
                 self.rc(0, 0, 0, 0)
                 raise OdometryLost()  # not making progress: use 'go' for the rest
             x, y, z, _ = self.pose.get()
-            if abs(z - target[2]) < cfg.Z_DEADBAND_CM:
+            if not self._dz(target[2] - z):
                 z = target[2]    # small floor step: fly level, don't chase the ToF height
             p = (x, y, z)
             to_target = math.dist(p, target)
@@ -458,9 +462,7 @@ class PathFollower:
                     print("⚠️  Nauwkeurig positioneren komt niet dichter: gestopt")
                     return
                 x, y, z, _ = self.pose.get()
-                ex, ey, ez = target[0] - x, target[1] - y, target[2] - z
-                if abs(ez) < cfg.Z_DEADBAND_CM:
-                    ez = 0.0
+                ex, ey, ez = target[0] - x, target[1] - y, self._dz(target[2] - z)
                 if math.hypot(ex, ey) < cfg.FINE_TOL_CM and abs(ez) < 1.5 * cfg.FINE_TOL_CM:
                     return
                 v = [cfg.RC_GAIN * e for e in (ex, ey, ez)]

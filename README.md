@@ -122,7 +122,7 @@ gewoon uitgevoerd en getekend.
 
 | type | velden | betekenis |
 |---|---|---|
-| `mission` | `id`, `waypoints` (`[{"x","y","z"}, …]` of `[[x,y,z], …]`), optioneel `speed` (10-100 cm/s), `land_at_end`, `nav_mode` (`"go"`/`"rc"`), `fine` (`"auto"`/`"all"`/`"last"`/`"off"`) | Opstijgen (als nodig) en de waypoints afvliegen |
+| `mission` | `id`, `waypoints` (`[{"x","y","z"}, …]` of `[[x,y,z], …]`), optioneel `speed` (10-100 cm/s), `land_at_end`, `nav_mode` (`"go"`/`"rc"`), `fine` (`"auto"`/`"all"`/`"last"`/`"off"`), `level`, `helipad_search` (zie [Landen op een H](#landen-op-een-h-helipad)) | Opstijgen (als nodig) en de waypoints afvliegen |
 | `abort` | – | Missie afbreken na de huidige stap en landen |
 | `land` / `takeoff` | – | `land` breekt ook een lopende missie af |
 | `helipad_land` | – | Test zonder pad: opstijgen (als nodig), een H onder de drone zoeken en erop landen |
@@ -275,6 +275,16 @@ python -m drone.helipad foto_van_de_h.jpg
 grond staat, zoekt een H binnen `HELIPAD_RADIUS_CM` van waar hij hangt en landt erop. Leg de H
 dus op minder dan ongeveer 50 cm van de drone. Ziet hij geen H, dan landt hij gewoon ter plaatse.
 De knop *Landen* breekt het af.
+
+**Rondvliegen en landen op de gevonden H** (`json_flights/h_search_test.json`, of de vinkjes
+*Zelfde hoogte houden* en *Landen op gevonden H* in de GUI):
+
+* `"level": true`: de drone houdt de hoogte van na het opstijgen en past ze nooit aan voor de
+  vloer (de ToF-afstand), ook niet bij grote verschillen.
+* `"helipad_search": true`: elke keer dat de camera onderweg een H ziet, wordt de plek
+  onthouden. Na het laatste punt vliegt de drone terug naar die plek (de mediaan van alle
+  waarnemingen) en landt in het midden van de H. Is er tijdens de hele vlucht geen H gezien,
+  dan vliegt hij terug naar het **eerste** punt en landt daar.
 
 In de simulator (`--sim`) ligt een H op (10, −30). Een missie die op (0, 0) eindigt, landt erop,
 net als *Landen op de H* vanaf de startplek.
