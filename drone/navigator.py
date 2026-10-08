@@ -215,8 +215,34 @@ class PathFollower:
         self.pose = pose
         self.abort = abort_event
         self.yaw_hold = cfg.YAW_HOLD
+        self._last_rc = 0.0
         if cfg.MAX_STEP_CM < 40 or cfg.MAX_STEP_CM > 500:
             raise ValueError("MAX_STEP_CM must be between 40 and 500")
+
+    def rc(self, lr, fb, ud, yv):
+        """send_rc_control that remembers when the sticks were last used."""
+        self._last_rc = time.time()
+        self.tello.send_rc_control(lr, fb, ud, yv)
+
+    def _go(self, bx, by, bz, speed):
+        """
+        'go' move. The Tello answers 'error Not joystick' when a 'go' arrives while
+        it is still busy with rc (stick) commands, e.g. right after the recentering
+        at takeoff or precise positioning: wait until it has settled, and retry.
+        """
+        wait = cfg.RC_SETTLE_S - (time.time() - self._last_rc)
+        if wait > 0:
+            time.sleep(wait)
+        for attempt in range(3):
+            try:
+                return self.tello.go_xyz_speed(bx, by, bz, speed)
+            except Exception as e:
+                if "joystick" not in str(e).lower() or attempt == 2:
+                    raise
+                print("ℹ️  Tello nog bezig met de vorige beweging: even wachten en opnieuw")
+                self.tello.send_rc_control(0, 0, 0, 0)
+                time.sleep(1.5)
+                self._check_abort()
 
     def _check_abort(self):
         if self.abort.is_set():
@@ -245,7 +271,7 @@ class PathFollower:
                         self.rc_leg(prev, wp, speed, stop_at_end=last)
                     except OdometryLost:
                         print("⚠️  Odometrie kwijt: verder in stap-modus")
-                        self.tello.send_rc_control(0, 0, 0, 0)
+                        self.rc(0, 0, 0, 0)
                         mode = "go"
                         self.move_to(wp, speed)
                 else:
@@ -257,7 +283,7 @@ class PathFollower:
                     on_waypoint(i, wp)
         finally:
             if mode == "rc":
-                self.tello.send_rc_control(0, 0, 0, 0)
+                self.rc(0, 0, 0, 0)
 
     # --------------------------------------------------------------- heading
     def yaw_error(self):
@@ -306,7 +332,7 @@ class PathFollower:
             wdx, wdy = self.pose.body_to_world(bx, by)
             self.pose.begin_move((x + wdx, y + wdy, z + bz), speed)
             try:
-                self.tello.go_xyz_speed(bx, by, bz, speed)
+                self._go(bx, by, bz, speed)
             except Exception:
                 self.pose.cancel_move()
                 raise
@@ -322,7 +348,7 @@ class PathFollower:
             fb, lr, ud = (v * min_units / mag for v in (fb, lr, ud))
         yv = -cfg.RC_YAW_GAIN * self.yaw_error() if self.yaw_hold else 0  # rc yaw: clockwise +
         clamp = lambda v: int(max(-100, min(100, round(v))))
-        self.tello.send_rc_control(clamp(lr), clamp(fb), clamp(ud), clamp(yv))
+        self.rc(clamp(lr), clamp(fb), clamp(ud), clamp(yv))
 
     def rc_leg(self, start, target, speed, stop_at_end):
         """Follow the straight line start -> target without stopping (pure pursuit)."""
@@ -335,10 +361,10 @@ class PathFollower:
         while True:
             self._check_abort()
             if not self.pose.measured:
-                self.tello.send_rc_control(0, 0, 0, 0)
+                self.rc(0, 0, 0, 0)
                 raise OdometryLost()
             if time.time() > deadline:
-                self.tello.send_rc_control(0, 0, 0, 0)
+                self.rc(0, 0, 0, 0)
                 raise OdometryLost()  # not making progress: use 'go' for the rest
             x, y, z, _ = self.pose.get()
             if abs(z - target[2]) < cfg.Z_DEADBAND_CM:
@@ -348,7 +374,7 @@ class PathFollower:
             if to_target < (cfg.FINE_TOL_CM if stop_at_end else cfg.RC_PASS_CM):
                 break
             if to_target > worst:
-                self.tello.send_rc_control(0, 0, 0, 0)
+                self.rc(0, 0, 0, 0)
                 self.pose.vo_disabled = True
                 print("⚠️  Drone gaat van het punt weg: vloeiend vliegen gestopt en "
                       "odometrie uitgeschakeld")
@@ -377,7 +403,7 @@ class PathFollower:
             self.send_velocity(*(e / n * v for e in err), min_units=cfg.RC_MIN_UNITS)
             time.sleep(period)
         if stop_at_end:
-            self.tello.send_rc_control(0, 0, 0, 0)
+            self.rc(0, 0, 0, 0)
 
     def descend_and_land(self, target_xy):
         """
@@ -405,7 +431,7 @@ class PathFollower:
                 self.send_velocity(vx, vy, -cfg.LAND_DESCENT_CMS)
                 time.sleep(period)
         finally:
-            self.tello.send_rc_control(0, 0, 0, 0)
+            self.rc(0, 0, 0, 0)
         return True
 
     def hold_position(self, target):
@@ -446,4 +472,4 @@ class PathFollower:
             print(f"ℹ️  Nauwkeurig positioneren: na {cfg.FINE_TIMEOUT_S}s nog "
                   f"{math.hypot(ex, ey):.0f} cm naast het punt")
         finally:
-            self.tello.send_rc_control(0, 0, 0, 0)
+            self.rc(0, 0, 0, 0)

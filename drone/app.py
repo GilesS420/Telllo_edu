@@ -14,8 +14,10 @@ Threads:
 import math
 import os
 import queue
+import sys
 import threading
 import time
+import traceback
 
 import cv2
 
@@ -387,7 +389,13 @@ class DroneApp:
             t_start = time.time()
             frame = self.frame_reader.frame
             if frame is not None:
-                self.process_frame(frame, t_start)
+                try:
+                    self.process_frame(frame, t_start)
+                except Exception as e:   # never let the camera view freeze
+                    if str(e) != getattr(self, "_detect_error", None):
+                        self._detect_error = str(e)
+                        print(f"⚠️  Fout bij het verwerken van het camerabeeld: {e!r}")
+                        traceback.print_exc(file=sys.stdout)
             time.sleep(max(0.0, period - (time.time() - t_start)))
 
     def emergency_stop(self):
@@ -427,14 +435,16 @@ class DroneApp:
             self.record_frame(gray)
         height = self.read_height(default=pose[2])
         active = self.airborne and self.state == "flying" and height >= cfg.MIN_DETECT_HEIGHT
-        pad = None
-        if cfg.HELIPAD_LAND and self.airborne and height >= 15:
-            pad = self.pad_detector.find(gray)
-            if pad is not None:
-                h, w = gray.shape
-                x, y, _ = pixel_to_world(pad.cx, pad.cy, w, h, height, pose)
-                self.pads.append((t_frame, x, y, pad.size_px / w))
-                del self.pads[:-50]
+        # Also on the ground, so you can test it by holding the drone above the H
+        # (it is drawn green in the GUI camera view)
+        pad = self.pad_detector.find(gray) if cfg.HELIPAD_LAND else None
+        if pad is not None and self.airborne and height >= 15:
+            h, w = gray.shape
+            x, y, _ = pixel_to_world(pad.cx, pad.cy, w, h, height, pose)
+            if not self.pads or t_frame - self.pads[-1][0] > 5:
+                print(f"🛬 H gezien op ({x:.0f}, {y:.0f})")
+            self.pads.append((t_frame, x, y, pad.size_px / w))
+            del self.pads[:-50]
         if active:
             h, w = gray.shape
             for d in dets:
