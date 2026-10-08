@@ -1,0 +1,12 @@
+{
+  "type": "mission",
+  "id": "test-forward-back",
+  "speed": 30,
+  "land_at_end": true,
+  "nav_mode": "go",
+  "fine": "auto",
+  "waypoints": [
+    [100, 0, 80],
+    [0, 0, 80]
+  ]
+}
