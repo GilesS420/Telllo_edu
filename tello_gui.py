@@ -17,7 +17,6 @@ json_flights/.
 """
 
 import argparse
-import base64
 import json
 import math
 import os
@@ -28,6 +27,7 @@ from tkinter import filedialog, messagebox, ttk
 
 import cv2
 import matplotlib
+from PIL import Image, ImageTk
 
 matplotlib.use("TkAgg")
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg  # noqa: E402
@@ -38,7 +38,7 @@ from drone import config as cfg  # noqa: E402
 from drone.navigator import validate_waypoints  # noqa: E402
 from drone.app import DroneApp  # noqa: E402
 
-REFRESH_MS = 200
+REFRESH_MS = 50
 
 # GUI label -> config value
 NAV_MODES = {"Stap (stopt bij elk punt)": "go", "Vloeiend (zonder stoppen)": "rc"}
@@ -84,7 +84,7 @@ class TelloGUI:
         self._label_key = None
         self._limits_key = None
         self._puddle_key = None
-        self._photo = None
+        self._camera_photo = None
 
         root.title("Tello EDU – missiebesturing")
         root.geometry("1450x880")
@@ -173,6 +173,20 @@ class TelloGUI:
         ttk.Checkbutton(box, text="Landen na het laatste punt",
                         variable=self.land_at_end).pack(anchor=tk.W, pady=(4, 0))
 
+        # --- camera mode
+        box = ttk.LabelFrame(left, text="Camera", padding=6)
+        box.pack(fill=tk.X, pady=(8, 0))
+        self.camera_mode_var = tk.StringVar(value="onder")
+        ttk.Label(box, text="Actieve camera:").pack(anchor=tk.W)
+        ttk.Label(box, textvariable=self.camera_mode_var,
+                  font=("TkDefaultFont", 10, "bold")).pack(anchor=tk.W, pady=(0, 4))
+        row = ttk.Frame(box)
+        row.pack(fill=tk.X)
+        ttk.Button(row, text="Voor", command=lambda: self.set_camera_mode(False)).pack(
+            side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 3))
+        ttk.Button(row, text="Onder", command=lambda: self.set_camera_mode(True)).pack(
+            side=tk.LEFT, expand=True, fill=tk.X, padx=(3, 0))
+
         # --- flight buttons
         box = ttk.LabelFrame(left, text="Vliegen", padding=6)
         box.pack(fill=tk.X, pady=(4, 0))
@@ -223,8 +237,12 @@ class TelloGUI:
         bottom.pack(fill=tk.X, pady=(6, 0))
         cam = ttk.LabelFrame(bottom, text="Onderste camera", padding=4)
         cam.pack(side=tk.LEFT)
-        self.cam_label = tk.Label(cam, width=320, height=240, bg="black")
+        self.cam_label = tk.Label(cam, width=320, height=240, bg="black",
+                      text="Camera wordt geladen...",
+                      fg="white", wraplength=300, justify=tk.CENTER)
         self.cam_label.pack()
+        self.camera_btn = ttk.Button(cam, text="Camera: onder", command=self.toggle_camera_mode)
+        self.camera_btn.pack(fill=tk.X, pady=(4, 0))
 
         box = ttk.LabelFrame(bottom, text="Gevonden plassen", padding=4)
         box.pack(side=tk.LEFT, fill=tk.Y, padx=6)
@@ -401,6 +419,7 @@ class TelloGUI:
         self.update_plot(pose, puddles)
         self.update_puddles(puddles)
         self.update_camera()
+        self.camera_mode_var.set("onder" if self.app.downvision_enabled else "voor")
 
     def update_puddles(self, puddles):
         key = tuple((p["id"], p["x"], p["y"]) for p in puddles)
@@ -413,15 +432,50 @@ class TelloGUI:
                                                         f"{p['area_cm2']:.0f}"))
 
     def update_camera(self):
-        with self.app._vis_lock:
-            vis = None if self.app._vis is None else self.app._vis.copy()
-        if vis is None:
+        frame = self.app.frame_reader.frame if hasattr(self.app, "frame_reader") else None
+        self.camera_btn.configure(text="Camera: onder" if self.app.downvision_enabled
+                                  else "Camera: voor")
+        self.camera_mode_var.set("onder" if self.app.downvision_enabled else "voor")
+        if frame is None:
+            self.cam_label.configure(text="Geen camerabeeld", image="")
             return
-        vis = cv2.resize(vis, (320, 240))
-        ok, buf = cv2.imencode(".png", vis)
-        if ok:
-            self._photo = tk.PhotoImage(data=base64.b64encode(buf.tobytes()))
-            self.cam_label.configure(image=self._photo, width=320, height=240)
+
+        vis = frame.copy()
+        if vis.ndim == 2:
+            vis = cv2.cvtColor(vis, cv2.COLOR_GRAY2RGB)
+        elif not cfg.FRAME_IS_RGB:
+            vis = cv2.cvtColor(vis, cv2.COLOR_BGR2RGB)
+
+        vis = cv2.resize(vis, (720, 480))
+        battery = self.app.tello.get_battery()
+        cv2.putText(vis, f"Battery: {battery}%", (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
+                    1, (0, 255, 0), 2)
+        cv2.putText(vis, f"Downvision: {'ON' if self.app.downvision_enabled else 'OFF'}",
+                    (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        cv2.putText(vis, "GUI Camera", (10, 450), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7, (255, 255, 0), 2)
+        img = Image.fromarray(vis)
+        self._camera_photo = ImageTk.PhotoImage(img)
+        self.cam_label.configure(image=self._camera_photo, text="")
+
+    def toggle_camera_mode(self):
+        try:
+            self.app.toggle_downvision()
+        except Exception as e:
+            messagebox.showerror("Camera", str(e))
+            return
+        self.camera_btn.configure(text="Camera: onder" if self.app.downvision_enabled
+                                  else "Camera: voor")
+
+    def set_camera_mode(self, use_downvision):
+        try:
+            self.app.set_downvision(use_downvision)
+        except Exception as e:
+            messagebox.showerror("Camera", str(e))
+            return
+        self.camera_btn.configure(text="Camera: onder" if self.app.downvision_enabled
+                                  else "Camera: voor")
+        self.camera_mode_var.set("onder" if self.app.downvision_enabled else "voor")
 
     # ========================================================== waypoints
     def _read_entries(self):

@@ -40,6 +40,7 @@ class DroneApp:
         self.follower = PathFollower(tello, self.pose, self.abort)
         self.detector = create_detector()
         self.tracker = PuddleTracker()
+        self._frame = None
         self._vis = None
         self._vis_lock = threading.Lock()
         self._last_cmd_time = time.time()
@@ -47,6 +48,7 @@ class DroneApp:
         self.recording = record_dir is not None
         self._last_record = 0.0
         self._record_count = 0
+        self.downvision_enabled = False
 
         self.link = JetsonLink(self.submit, cfg.LISTEN_HOST, cfg.LISTEN_PORT,
                                cfg.JETSON_HOST, cfg.JETSON_PORT)
@@ -56,8 +58,7 @@ class DroneApp:
         self.tello.connect()
         print("Battery level:", self.tello.get_battery())
         self.tello.streamon()
-        self.tello.send_command_with_return("downvision 1")
-        print("Downvision enabled")
+        self.set_downvision(True)
         self.frame_reader = self.tello.get_frame_read()
         self.mission_thread = threading.Thread(target=self.mission_loop, daemon=True)
         self.mission_thread.start()
@@ -65,6 +66,17 @@ class DroneApp:
         self.odometry = Odometry(self.tello, self.pose, self.frame_reader, self.detector,
                                  lambda: self.airborne)
         threading.Thread(target=self.status_loop, daemon=True).start()
+
+    def set_downvision(self, enabled):
+        enabled = bool(enabled)
+        if self.downvision_enabled == enabled:
+            return
+        self.tello.send_command_with_return(f"downvision {1 if enabled else 0}")
+        self.downvision_enabled = enabled
+        print(f"Downvision {'enabled' if enabled else 'disabled'}")
+
+    def toggle_downvision(self):
+        self.set_downvision(not self.downvision_enabled)
 
     # ------------------------------------------------- jetson / manual input
     def submit(self, msg):
@@ -278,6 +290,7 @@ class DroneApp:
                     self.link.send({"type": "puddle", "mission": self.mission_id, **report})
         vis = draw_detections(gray, dets if active else [])
         with self._vis_lock:
+            self._frame = frame.copy() if hasattr(frame, "copy") else frame
             self._vis = vis
 
     def shutdown(self):
