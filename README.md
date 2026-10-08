@@ -1,7 +1,7 @@
 # Tello EDU – autonoom pad volgen + plassen detecteren
 
 ```
-tello_gui.py          ← start hier: grafische besturing (coördinaten, 3D-pad, camera, plassen)
+tello_gui.py          ← start hier: grafische besturing (pad plannen, 3D, terrein, sensoren, camera)
 tello_combined.py     ← live vliegen met het toetsenbord (ZQSD), handig om te testen/kalibreren
 drone/
     app.py            kern: missies afvliegen, plassen detecteren, Jetson-koppeling
@@ -10,7 +10,9 @@ drone/
     odometry.py       meet de echte beweging: camera (visuele odometrie), kompas, hoogte
     puddle_detector.py  plasdetectie (drempelmethode of getraind model) + samenvoegen
     jetson_link.py    UDP/JSON-communicatie met de Jetson
-    sim.py            simulator: alles testen zonder drone (`--sim`)
+    telemetry.py      alle sensorwaarden over tijd + terreinkaart (barometer − ToF)
+    sim.py            simulator: alles testen zonder drone (`--sim`), met dozen op de vloer
+gui/                  onderdelen van de GUI: thema, instrumenten, 3D-weergave, kaart
     keypress.py       toetsenbord-hulp voor tello_combined.py
 json_flights/         opgeslagen vluchten (JSON), te openen met Opslaan/Laden in de GUI
 docs/                 afbeeldingen voor deze README
@@ -70,26 +72,49 @@ python tello_combined.py              # live vliegen met het toetsenbord
 
 ![Tello GUI](docs/gui.png)
 
-* **Waypoints**: vul x, y en z in (cm) en druk op Enter of *Toevoegen*. Klik een punt in de
-  lijst aan om het aan te passen (*Bijwerken*), te verplaatsen (▲▼) of te verwijderen.
-  *Huidige positie* neemt de positie van de drone over. Elk punt wordt meteen gecontroleerd
-  tegen de geofence.
-* **Opslaan/Laden**: vluchten worden als JSON bewaard in `json_flights/`
+**Bovenbalk**: toestand, batterij, vliegtijd, hoogte, odometrie en of de Jetson berichten
+stuurt. Meldingen (plas gevonden, waarschuwingen, fouten) verschijnen rechtsboven in plaats
+van in pop-ups.
+
+**Links: pad plannen en vliegen**
+* **Waypoint**: vul x, y en z in (cm, pijltjes of scrollwiel = ±10) en druk op Enter of
+  *Toevoegen*. Een waarde buiten de geofence kleurt meteen rood. Klik een punt in de lijst aan
+  om het aan te passen (*Bijwerken*), te verplaatsen (▲▼) of te verwijderen (✕ of Delete).
+  *Drone-positie* neemt de huidige positie over. **Ctrl+Z** maakt elke wijziging ongedaan.
+* **Raster…** maakt een pad in banen (“grasmaaier”) over een rechthoek, om een gebied af te
+  zoeken naar plassen en het terrein in kaart te brengen. De tussenafstand wordt voorgesteld
+  op basis van wat de camera op die hoogte ziet.
+* Boven de lijst staan het aantal punten, de lengte en een schatting van de vliegduur.
+* **Opslaan/Laden** (Ctrl+S / Ctrl+O): vluchten als JSON in `json_flights/`
   (zie `json_flights/mission_example.json` voor het formaat).
-* **3D-rooster**: oranje = ingevoerd pad (genummerde punten met coördinaten), blauw = actieve
-  missie (ook missies van de Jetson), groen = bereikte punten, rood = gevlogen spoor, rode X =
-  drone (met stippellijn naar de vloer), cyaan = gevonden plassen. Sleep met de muis om te
-  draaien of kies *3D*, *Boven* of *Zijkant*.
-* **Missie**: *Vliegmodus* (stap of vloeiend) en *Nauwkeurig positioneren*, zie
-  [Nauwkeurig vliegen](#nauwkeurig-vliegen). In de status zie je de *Richting* en of de
-  *Odometrie* de vloer meet. Het rode streepje aan de drone in het rooster is zijn neus.
-* **Vliegen**: *Start missie*, *Ga naar geselecteerd punt* (blijft daarna hangen),
-  *Opstijgen*, *Landen* (toets L) en **NOODSTOP** (toets X, motoren uit, de drone valt!).
-* Onderaan: het beeld van de onderste camera met detecties, de gevonden plassen, de log en
-  een knop om beelden op te nemen voor de dataset.
+* **Vliegen**: *Start missie*, *Ga naar punt* (blijft daarna hangen), *Opstijgen*,
+  *Landen* (toets L) en **NOODSTOP** (toets X, motoren uit, de drone valt!).
+
+**Midden: drie tabbladen** (Ctrl+1/2/3)
+* **3D-weergave**: assenkruis bij de start (x rood = vooruit, y groen = links, z blauw = hoogte),
+  oranje = gepland pad, blauw = actieve missie (ook van de Jetson), groen = bereikte punten,
+  roze = gevlogen spoor, het drone-modelletje draait mee met de richting en kantelt met
+  pitch/roll (rode rotors = voorkant), cyaan = plassen en wat de camera nu ziet, gekleurde
+  tegels = gemeten terrein. Slepen = draaien, scrollen = zoomen, of kies *3D*, *Boven*,
+  *Zijkant* of *Achter*. De assen schuiven vloeiend mee in plaats van te verspringen.
+* **Kaart & terrein**: bovenaanzicht met de terreinkaart. **Klik** om een punt toe te voegen
+  (hoogte = het z-veld), **sleep** een punt om het te verplaatsen, **rechtsklik** om het te
+  wissen, scroll om te zoomen. Plassen staan op ware grootte. Rechts de terreinanalyse,
+  onderaan het hoogteprofiel langs het gevlogen spoor. Zie [Terreinanalyse](#terreinanalyse).
+* **Sensoren**: live grafieken van hoogte (ToF, barometer, positie), terrein onder de drone,
+  snelheid, houding (pitch/roll), versnelling, batterij en temperatuur. Kies het venster
+  (30 s, 1 min, 5 min) en exporteer alles naar CSV voor een verslag.
+
+![Kaart en terrein](docs/gui_terrein.png)
+
+**Rechts**: camerabeeld (voor/onder, met of zonder detecties, opnemen voor de dataset),
+de instrumenten (kunstmatige horizon, kompas met de vastgehouden richting, hoogtemeter met de
+grond eronder), de belangrijkste sensorwaarden en de gevonden plassen (*Vlieg naar plas*).
+
+![Sensoren](docs/gui_sensoren.png)
 
 De Jetson-verbinding blijft actief terwijl de GUI open is: missies van de Jetson worden
-gewoon uitgevoerd en in het rooster getekend.
+gewoon uitgevoerd en getekend.
 
 ## Protocol (JSON over UDP, één bericht per pakket)
 
@@ -134,6 +159,35 @@ Blobs die de beeldrand raken worden genegeerd, omdat hun middelpunt dan niet klo
 pixel omgerekend naar cm. Daarna komt de positie van de drone op het moment van het beeld
 erbij (min `FRAME_LATENCY_S` vertraging). Een plas wordt pas gemeld als hij `MIN_HITS` keer
 gezien is. Detecties binnen `MERGE_RADIUS_CM` worden samengevoegd tot één plas.
+
+## Terreinanalyse
+
+De Tello heeft twee sensoren die samen het terrein kunnen meten:
+
+* de **barometer** meet de luchtdruk, dus de hoogte van de drone t.o.v. de start;
+* de **ToF-sensor** onder de drone meet de afstand tot wat eronder ligt.
+
+`grondhoogte = barometer-hoogte − ToF-afstand`. Vliegt de drone over een doos, dan wordt de
+ToF-afstand kleiner terwijl de barometer-hoogte gelijk blijft: daar ligt de grond hoger.
+De eerste metingen in de lucht bepalen het nulniveau (de vloer bij de start).
+
+De metingen worden per vakje van 20 × 20 cm gemiddeld (`TERRAIN_CELL_CM`). De analyse geeft het
+gemeten oppervlak, de laagste/hoogste punten, de ruwheid en een lijst van **obstakels**
+(aaneengesloten vakjes hoger dan `TERRAIN_OBSTACLE_CM` = 15 cm) en dalingen. Exporteren kan met
+*Terrein → CSV*.
+
+**Nauwkeurigheid**: de barometer ruist (±10–20 cm) en verloopt langzaam met de luchtdruk. Dozen,
+treden en hellingen vind je dus wel, kleine hoogteverschillen niet. Verschuift de kaart in de
+loop van een vlucht, hang dan boven de vloer en druk op *Herijken*. In `drone/config.py` kun je
+met `TERRAIN_ALT_SOURCE = "h"` ook de eigen hoogteschatting van de Tello proberen in plaats van
+de barometer.
+
+Let op: boven een obstakel meet de ToF-sensor een kleinere hoogte. De odometrie gebruikt die
+hoogte, dus net boven een rand kan ze even “kwijt” zijn (de drone vliegt dan verder in
+stap-modus).
+
+In de simulator liggen een doos (30 cm), een plank (12 cm) en een kist (45 cm) op de vloer
+(`SIM_TERRAIN` in `drone/sim.py`), zodat je dit zonder drone kunt uitproberen.
 
 ## Nauwkeurig vliegen
 
