@@ -243,8 +243,14 @@ In het echt hangt dit af van de vloer (textuur) en van een goede kalibratie van 
 (zie [Kalibreren](#kalibreren-belangrijk-vóór-de-eerste-echte-vlucht)).
 
 **Veiligheid**: na elke beweging wordt de gemeten verplaatsing vergeleken met het commando.
-Klopt de richting niet (bv. een verkeerde `CAM_FORWARD_SIGN`), dan wordt de odometrie meteen
-uitgeschakeld en vliegt de drone verder zoals vroeger. In de vloeiende modus stopt de drone
+Is de gemeten beweging even lang maar 90°, 180° of 270° gedraaid, dan is het camerabeeld
+gedraaid gemonteerd: dat wordt één keer automatisch gecorrigeerd (`CAM_ROTATE_DEG`). Klopt het
+dan nog niet, dan wordt de odometrie uitgeschakeld en vliegt de drone verder zoals vroeger.
+
+**Kleine hoogteverschillen**: de hoogte komt uit de ToF-sensor, die de afstand tot de grond
+meet. Een kleine trede of plank in de vloer lijkt dus een hoogteverandering. Verschillen
+kleiner dan `Z_DEADBAND_CM` (25 cm) worden niet gecorrigeerd: de drone vliegt gewoon recht
+door. Zet het op 0 als je wilt dat hij de hoogte altijd bijstuurt. In de vloeiende modus stopt de drone
 ook als hij verder van het punt raakt in plaats van dichter. Draait de richtingcorrectie de
 verkeerde kant op, dan schakelt die zichzelf uit (zie `YAW_SIGN`).
 
@@ -313,6 +319,10 @@ worden terwijl hij volledig in beeld is, dus vlieg trager als het model traag is
 3. **Oriëntatie.** Leg een donker voorwerp **vóór** de drone en schuif de drone er langzaam
    naartoe. Komt het voorwerp van **boven** het beeld binnen? Dan `CAM_FORWARD_SIGN = 1`, anders `-1`.
    Doe hetzelfde naar links voor `CAM_LEFT_SIGN`.
+   Komt het voorwerp van **opzij** binnen terwijl je vooruit schuift, dan is het beeld 90°
+   gedraaid: zet `CAM_ROTATE_DEG` (0, 90, 180 of 270). Dat wordt ook automatisch gemeten bij de
+   eerste beweging van een vlucht; de log toont dan *Camerabeeld is … gedraaid* met de waarde
+   die je in `drone/config.py` moet zetten.
 4. **Detectie afstellen.** Maak foto's/video van echte plassen op jullie vloer en run
    `python -m drone.puddle_detector foto.jpg`: je ziet de gevonden plassen en het masker. Pas
    `DARK_OFFSET`, `MIN_AREA_PX`, `MIN_SOLIDITY` en `PUDDLE_MODE` aan tot het klopt.
