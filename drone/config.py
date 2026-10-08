@@ -15,7 +15,7 @@ and converts the puddle coordinates it gets back to real-world coordinates.
 # ---------------------------------------------------------------------------
 # Network link with the Jetson (JSON over UDP, one message per datagram)
 # ---------------------------------------------------------------------------
-LISTEN_HOST = "0.0.0.0"     # interface on which we accept commands
+LISTEN_HOST = "127.0.0.1"   # loopback by default; set to 0.0.0.0 only if required
 LISTEN_PORT = 9000          # Jetson sends commands to this port
 JETSON_HOST = None          # None = reply to whoever sent the last command
 JETSON_PORT = 9001          # Jetson listens on this port for puddles/status
