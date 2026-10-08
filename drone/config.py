@@ -43,6 +43,12 @@ FINE_POSITION = "auto"      # precise positioning at waypoints: "off", "last", "
 FINE_TOL_CM = 8             # precise positioning: stop when closer than this
 FINE_TIMEOUT_S = 4          # give up precise positioning after this time
 
+# The Tello slides sideways while it takes off and lands. With working odometry:
+TAKEOFF_RECENTER = True     # after takeoff, move back above the takeoff spot
+PRECISE_LAND = True         # mission end: descend slowly while holding the spot, then land
+LAND_HOVER_CM = 30          # ... down to this height, the last bit is the normal 'land'
+LAND_DESCENT_CMS = 25       # descent speed (cm/s) during the precise landing
+
 # Heading hold: keep the nose in the start direction (IMU yaw)
 YAW_HOLD = True
 YAW_TOL_DEG = 4             # 'go' mode: rotate back when the heading is off by more than this

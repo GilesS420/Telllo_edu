@@ -349,6 +349,35 @@ class PathFollower:
         if stop_at_end:
             self.tello.send_rc_control(0, 0, 0, 0)
 
+    def descend_and_land(self, target_xy):
+        """
+        Land on target_xy: descend slowly with rc while the odometry keeps the
+        drone above the spot, then the normal 'land' for the last few cm. The
+        Tello's own landing from 80 cm slides sideways much more.
+        Returns False (nothing sent) when the odometry isn't tracking.
+        """
+        if not self.pose.measured:
+            return False
+        self.hold_position((*target_xy, self.pose.get()[2]))
+        period = 1.0 / cfg.RC_HZ
+        _, _, z, _ = self.pose.get()
+        deadline = time.time() + max(z - cfg.LAND_HOVER_CM, 0) / cfg.LAND_DESCENT_CMS + 4
+        try:
+            while time.time() < deadline:
+                self._check_abort()
+                x, y, z, _ = self.pose.get()
+                if z <= cfg.LAND_HOVER_CM or not self.pose.measured:
+                    break
+                vx, vy = (cfg.RC_GAIN * (t - c) for t, c in zip(target_xy, (x, y)))
+                n = math.hypot(vx, vy)
+                if n > 20:
+                    vx, vy = vx * 20 / n, vy * 20 / n
+                self.send_velocity(vx, vy, -cfg.LAND_DESCENT_CMS)
+                time.sleep(period)
+        finally:
+            self.tello.send_rc_control(0, 0, 0, 0)
+        return True
+
     def hold_position(self, target):
         """Precise positioning on a waypoint with small rc corrections."""
         if not self.pose.measured:
