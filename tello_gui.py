@@ -84,6 +84,8 @@ def fmt(v, digits=0, unit=""):
 
 
 class TelloGUI:
+    # Hoofdvenster van de missie-GUI: bouwt de interface, verwerkt input en
+    # houdt de live status van drone, camera, kaarten en sensoren bij.
     def __init__(self, root, app, log, sim=False):
         self.root, self.app, self.log, self.sim = root, app, log, sim
         self.waypoints = []          # editable draft path [(x, y, z), ...]
@@ -132,6 +134,8 @@ class TelloGUI:
 
     # ================================================================ layout
     def _build_topbar(self):
+        # Bovenste statusbalk met globale missie-informatie zoals batterij,
+        # vliegtijd, verbinding en waarschuwingen.
         bar = tk.Frame(self.root, bg=C["bg"], height=48)
         bar.pack(fill=tk.X, padx=8, pady=6)
         tk.Label(bar, text="TELLO EDU", bg=C["bg"], fg=C["text"], font=F["huge"]).pack(
@@ -158,6 +162,7 @@ class TelloGUI:
         self.toast = Toast(msg)
 
     def _build_left(self, left):
+        # Linkerkolom: vluchtknoppen, missie-instellingen en waypoint-bewerking.
         # --- flight buttons (packed first at the bottom so they never scroll away)
         outer, _, box = card(left, "Vliegen")
         outer.pack(side=tk.BOTTOM, fill=tk.X, pady=(8, 0))
@@ -275,6 +280,7 @@ class TelloGUI:
             side=tk.LEFT, fill=tk.X, expand=True)
 
     def _build_center(self, center):
+        # Middelste gedeelte: 3D-weergave, kaart/terrein en sensor-grafieken.
         self.tabs = ttk.Notebook(center)
         self.tabs.pack(fill=tk.BOTH, expand=True)
 
@@ -371,6 +377,7 @@ class TelloGUI:
         self.log_text.pack(fill=tk.BOTH, expand=True)
 
     def _build_right(self, right):
+        # Rechterkolom: camera, instrumenten en helipad-/asseninformatie.
         # --- camera
         outer, header, box = card(right, "Camera")
         outer.pack(fill=tk.X)
@@ -422,6 +429,7 @@ class TelloGUI:
         self._pad_text = None
 
     def _bind_keys(self):
+        # Sneltoetsen voor veelgebruikte acties tijdens plannen en vliegen.
         r = self.root
         r.bind("<Return>", lambda e: self._key(self.add_waypoint, e, typing_ok=True))
         r.bind("<Delete>", lambda e: self._key(self.delete_selected, e))
@@ -441,6 +449,7 @@ class TelloGUI:
 
     # ================================================================ refresh
     def tick(self):
+        # Periodieke UI-loop: status verversen, sensoren lezen en grafieken tekenen.
         try:
             self._tick()
         except Exception as e:      # keep the GUI alive whatever happens
@@ -449,6 +458,7 @@ class TelloGUI:
             self.root.after(TICK_MS, self.tick)
 
     def _tick(self):
+        # Eén update-cyclus van de GUI; draait ongeveer 30 keer per seconde.
         app = self.app
         now = time.time()
         self._tick_n += 1
@@ -506,6 +516,7 @@ class TelloGUI:
             self._update_charts()
 
     def _drain_log(self):
+        # Verplaats nieuwe logregels uit de queue naar het zichtbare logvenster.
         lines = []
         while not self.log.queue.empty():
             lines.append(self.log.queue.get_nowait())
@@ -526,6 +537,7 @@ class TelloGUI:
         self.log_text.configure(state=tk.DISABLED)
 
     def _topbar(self, tel, now):
+        # Werk de bovenste statusbalk bij met vluchtstatus, batterij en linkstatus.
         app = self.app
         text, color = STATES.get(app.state, (app.state.upper(), C["faint"]))
         self.state_pill.configure(text=text, bg=color)
@@ -565,6 +577,7 @@ class TelloGUI:
             self.rec_pill.pack_forget()
 
     def _tiles(self, tel):
+        # Vul de kleine statustegels aan de rechterkant met live telemetrie.
         app = self.app
         t = self.tiles
         t["tof"].set(fmt(tel.get("tof")))
@@ -585,6 +598,7 @@ class TelloGUI:
 
     def _footprint(self, tel):
         """Corners of the ground area the downward camera sees right now."""
+        # Berekent het gebied op de grond dat de ondercamera op dit moment ziet.
         h = tel.get("tof")
         if not self.app.airborne or not h or not self.app.downvision_enabled:
             return None
@@ -600,6 +614,7 @@ class TelloGUI:
         return pts + [pts[0]]
 
     def _scene(self, tel):
+        # Verzamel alle data die de 3D-kaart nodig heeft in één scene-object.
         terrain = self.app.telemetry.terrain if hasattr(self.app, "telemetry") else None
         x, y = self.show[0], self.show[1]
         return {
@@ -615,6 +630,7 @@ class TelloGUI:
         }
 
     def _update_map(self, tel):
+        # Vernieuw de kaartweergave met terrein, pad, selectie en obstakels.
         terrain = self.app.telemetry.terrain
         s = self._scene(tel)
         s["terrain"] = terrain.snapshot()
@@ -627,6 +643,7 @@ class TelloGUI:
         self.mapview.update(s)
 
     def _terrain_text(self, summ, terrain):
+        # Toon samenvatting van het gemeten terrein en interpreteer de waarden.
         if not terrain.calibrated:
             self.terrain_info.configure(
                 text="Nog geen metingen.\n\nVlieg over het gebied: de drone vergelijkt zijn "
@@ -657,6 +674,7 @@ class TelloGUI:
         self.terrain_info.configure(text="\n".join(lines))
 
     def _update_charts(self):
+        # Teken de sensorgrafieken voor het gekozen tijdvenster.
         window = WINDOWS[self.window_seg.value]
         keys = {k for ch in self.charts for k, _, _ in ch.series}
         data = self.app.telemetry.series(keys, window)
@@ -664,6 +682,7 @@ class TelloGUI:
             ch.draw(data, window)
 
     def update_pad_info(self):
+        # Toon informatie over de gedetecteerde H-landingsplaats en assenstelsel.
         pad = self.app.seen_helipad()
         lines = [f"H gezien op  x {pad[0]:.0f}, y {pad[1]:.0f} cm" if pad else
                  "Nog geen H gezien (deze vlucht).",
@@ -677,6 +696,7 @@ class TelloGUI:
             self.pad_info.configure(text=text)
 
     def update_camera(self, tel):
+        # Render camerabeeld, overlay en statusindicatoren in het cameravak.
         app = self.app
         frame = app.frame_reader.frame if hasattr(app, "frame_reader") else None
         vis = app.latest_vis() if (self.show_dets.get() and app.downvision_enabled) else None
@@ -722,6 +742,7 @@ class TelloGUI:
 
     # ================================================================ camera
     def set_camera_mode(self, use_downvision):
+        # Schakel tussen voor- en ondercamera via de mission queue.
         # via the mission thread: only one thread may talk to the Tello at a time
         self._cam_pending = bool(use_downvision)
         self.app.submit({"type": "downvision", "enabled": use_downvision})
@@ -730,18 +751,21 @@ class TelloGUI:
                             "opdracht.", "info")
 
     def toggle_record(self):
+        # Start of stop het verzamelen van cameraframes voor een dataset.
         self.app.toggle_recording()
         self.record_btn.configure(text="■ Stop opnemen" if self.app.recording
                                   else "● Opnemen (dataset)")
 
     # ============================================================= waypoints
     def _speed_changed(self, v):
+        # Synchroniseer de snelheids-schuifregelaar met de label en statistiek.
         self.speed.set(int(float(v)))
         self.speed_lbl.configure(text=f"{self.speed.get()} cm/s")
         if hasattr(self, "path_stats"):
             self._path_stats()
 
     def _read_entries(self, quiet=False):
+        # Lees x, y en z uit de invoervelden en valideer tegen de geofence.
         try:
             point = tuple(float(self.entries[k].get().replace(",", ".")) for k in "xyz")
         except ValueError:
@@ -753,6 +777,7 @@ class TelloGUI:
         return point, None
 
     def _validate_entries(self):
+        # Markeer invoervelden groen of foutief afhankelijk van de geldigheid.
         point, err = self._read_entries()
         for k, e in self.entries.items():
             try:
@@ -766,10 +791,12 @@ class TelloGUI:
         return point
 
     def _push(self):
+        # Bewaar de huidige waypointlijst voor undo.
         self.history.append(list(self.waypoints))
         del self.history[:-50]
 
     def _changed(self, select=None):
+        # Herteken de waypointtabel en synchroniseer selectie + statistiek.
         self.sel = select if select is not None and 0 <= select < len(self.waypoints) else None
         self.tree.delete(*self.tree.get_children())
         for i, (x, y, z) in enumerate(self.waypoints):
@@ -782,6 +809,7 @@ class TelloGUI:
         self._next["3d"] = self._next["map"] = 0      # redraw now
 
     def _path_stats(self):
+        # Bereken totale padlengte en een ruwe vluchttijdschatting.
         if not self.waypoints:
             self.path_stats.configure(text="leeg")
             return
@@ -793,6 +821,7 @@ class TelloGUI:
                                        f"±{duration:.0f} s")
 
     def _tree_selected(self):
+        # Kopieer het geselecteerde waypoint naar de invoervelden.
         sel = self.tree.selection()
         if not sel:
             return
@@ -803,6 +832,7 @@ class TelloGUI:
         self._next["3d"] = self._next["map"] = 0
 
     def add_waypoint(self):
+        # Voeg het huidige invoerpunt toe aan de waypointlijst.
         point = self._validate_entries()
         if point is None:
             self.toast.show(self.entry_hint.cget("text"), "warn")
@@ -812,6 +842,7 @@ class TelloGUI:
         self._changed(select=len(self.waypoints) - 1)
 
     def update_waypoint(self):
+        # Vervang het geselecteerde waypoint door de huidige invoer.
         point = self._validate_entries()
         if self.sel is None:
             self.toast.show("Selecteer eerst een punt om bij te werken.", "warn")
@@ -822,11 +853,13 @@ class TelloGUI:
             self._changed(select=self.sel)
 
     def fill_current_pos(self):
+        # Vul de invoervelden met de actuele dronepositie.
         for k, v in zip("xyz", self.app.pose.get()[:3]):
             self.entries[k].set(f"{v:.0f}")
         self._validate_entries()
 
     def move_selected(self, delta):
+        # Verplaats een geselecteerd waypoint omhoog of omlaag in de lijst.
         i = self.sel
         if i is None or not 0 <= i + delta < len(self.waypoints):
             return
@@ -836,12 +869,14 @@ class TelloGUI:
         self._changed(select=i + delta)
 
     def delete_selected(self):
+        # Verwijder het geselecteerde waypoint.
         if self.sel is not None:
             self._push()
             del self.waypoints[self.sel]
             self._changed(select=min(self.sel, len(self.waypoints) - 1))
 
     def clear_waypoints(self):
+        # Wis het volledige pad, met undo-mogelijkheid.
         if self.waypoints:
             self._push()
             self.waypoints = []
@@ -849,6 +884,7 @@ class TelloGUI:
             self.toast.show("Pad gewist (Ctrl+Z om terug te zetten).", "info")
 
     def undo(self):
+        # Herstel de vorige waypointlijst uit de undo-stack.
         if not self.history:
             self.toast.show("Niets om ongedaan te maken.", "info", 2)
             return
@@ -857,6 +893,7 @@ class TelloGUI:
 
     # --- map callbacks
     def _map_z(self):
+        # Neem de huidige hoogte-invoer als standaard z-waarde voor kaartpunten.
         try:
             z = float(self.entries["z"].get().replace(",", "."))
         except ValueError:
@@ -865,6 +902,7 @@ class TelloGUI:
         return min(max(z, lo), hi)
 
     def _valid(self, point):
+        # Controleer of een punt binnen de toegestane vliegzone valt.
         try:
             validate_waypoints([point])
             return True
@@ -873,6 +911,7 @@ class TelloGUI:
             return False
 
     def _map_add(self, x, y):
+        # Voeg een waypoint toe via een klik op de kaart.
         point = (x, y, self._map_z())
         if self._valid(point):
             self._push()
@@ -880,6 +919,7 @@ class TelloGUI:
             self._changed(select=len(self.waypoints) - 1)
 
     def _map_move(self, i, x, y, final):
+        # Verplaats een waypoint op de kaart tijdens slepen.
         if i >= len(self.waypoints):
             return
         if not self._dragging:
@@ -900,15 +940,18 @@ class TelloGUI:
             self._next["map"] = 0
 
     def _map_delete(self, i):
+        # Verwijder een waypoint via rechtsklik op de kaart.
         self._push()
         del self.waypoints[i]
         self._changed(select=min(i, len(self.waypoints) - 1))
 
     def _map_select(self, i):
+        # Selecteer een waypoint uit de kaartweergave.
         self._changed(select=i)
         self._tree_selected()
 
     def _map_hover(self, info):
+        # Toon contextuele hulptekst wanneer de muis over de kaart beweegt.
         if info is None:
             self.mapview.set_hover_text(MAP_HELP)
             return
@@ -923,9 +966,11 @@ class TelloGUI:
 
     # --- raster pattern
     def pattern_dialog(self):
+        # Open het dialoogvenster om automatisch een rasterpad te maken.
         PatternDialog(self.root, self)
 
     def set_pattern(self, points):
+        # Sla het gegenereerde rasterpad op als huidige waypointlijst.
         self._push()
         self.waypoints = points
         self._changed(select=0)
@@ -933,6 +978,7 @@ class TelloGUI:
 
     # --- files
     def save_mission(self):
+        # Sla missie-instellingen en waypoints op als JSON-bestand.
         if not self.waypoints:
             self.toast.show("Er is nog geen pad om op te slaan.", "warn")
             return
@@ -944,6 +990,7 @@ class TelloGUI:
             self.toast.show(f"Opgeslagen: {os.path.basename(path)}", "ok")
 
     def load_mission(self):
+        # Laad waypoints en missie-instellingen uit een JSON-bestand.
         path = filedialog.askopenfilename(initialdir=FLIGHTS_DIR, filetypes=[("Missie", "*.json")])
         if not path:
             return
@@ -970,6 +1017,7 @@ class TelloGUI:
         self.toast.show(f"Geladen: {os.path.basename(path)} ({len(points)} punten)", "ok")
 
     def export_telemetry(self):
+        # Exporteer alle verzamelde telemetrie naar CSV.
         path = filedialog.asksaveasfilename(defaultextension=".csv",
                                             initialfile=time.strftime("telemetrie_%H%M%S.csv"),
                                             filetypes=[("CSV", "*.csv")])
@@ -978,6 +1026,7 @@ class TelloGUI:
             self.toast.show(f"{n} metingen opgeslagen in {os.path.basename(path)}", "ok")
 
     def export_terrain(self):
+        # Exporteer de actuele terreinkaart naar CSV.
         cells = self.app.telemetry.terrain.snapshot()
         if not cells:
             self.toast.show("Nog geen terreinmetingen.", "warn")
@@ -993,6 +1042,7 @@ class TelloGUI:
             self.toast.show(f"Terrein ({len(cells)} vakjes) opgeslagen.", "ok")
 
     def rereference(self):
+        # Stel de huidige grondhoogte opnieuw in als nulpunt.
         if not self.app.airborne:
             self.toast.show("Herijken kan alleen in de lucht, boven de vloer.", "warn")
             return
@@ -1000,22 +1050,27 @@ class TelloGUI:
         self.toast.show("Grond onder de drone wordt het nieuwe nulniveau.", "ok")
 
     def clear_terrain(self):
+        # Wis alle terreinmetingen en bijbehorende samenvatting.
         self.app.telemetry.terrain.reset()
         self._summary = None
         self.toast.show("Terreinkaart gewist.", "info")
 
     def _terrain3d_changed(self):
+        # Toon of verberg terrein in de 3D-weergave.
         self.map3d.show_terrain = self.terrain3d.get()
         self._next["3d"] = 0
 
     def _set_view(self, name):
+        # Schakel de camerastand van de 3D-view.
         self.map3d.set_view(name)
 
     def clear_trail(self):
+        # Wis het spoor van eerdere vluchten uit de visualisatie.
         self.trail = []
 
     # ================================================================ flying
     def _mission(self, waypoints, land_at_end):
+        # Bouw het missie-bericht dat naar de drone-engine wordt gestuurd.
         self.mission_count += 1
         return {"type": "mission", "id": f"gui-{self.mission_count}", "speed": self.speed.get(),
                 "land_at_end": land_at_end, "nav_mode": NAV_MODES[self.nav_mode.get()],
@@ -1024,6 +1079,7 @@ class TelloGUI:
                 "waypoints": [list(p) for p in waypoints]}
 
     def start_mission(self):
+        # Start de volledige missie met de huidige waypointlijst.
         if not self.waypoints:
             self.toast.show("Voeg eerst waypoints toe (klik op de kaart of vul x, y, z in).",
                             "warn")
@@ -1032,15 +1088,18 @@ class TelloGUI:
         self.toast.show(f"Missie gestart: {len(self.waypoints)} punten.", "ok")
 
     def goto_selected(self):
+        # Vlieg alleen naar het geselecteerde waypoint.
         if self.sel is None:
             self.toast.show("Selecteer eerst een punt in de lijst of op de kaart.", "warn")
             return
         self.app.submit(self._mission([self.waypoints[self.sel]], land_at_end=False))
 
     def land(self):
+        # Vraag een normale landing aan.
         self.app.submit({"type": "land"})
 
     def reset_environment(self):
+        # Zet de simulatie/omgeving terug zonder vluchtsporen of terrein.
         """After a flight: drone back to (0, 0) facing x, forget trail, H and terrain."""
         if self.app.airborne:
             self.toast.show("Resetten kan alleen op de grond (eerst landen).", "warn")
@@ -1051,14 +1110,17 @@ class TelloGUI:
         self.toast.show("Omgeving gereset: drone = (0, 0), x = richting van de neus.", "ok")
 
     def helipad_land(self):
+        # Laat de drone zoeken naar de H en daar automatisch landen.
         """Take off if needed, look for an H below the drone and land on it (no path)."""
         self.app.submit({"type": "helipad_land"})
         self.toast.show("Zoeken naar de H en erop landen…")
 
     def emergency(self):
+        # Noodstop: schakelt de motoren direct uit.
         self.app.emergency_stop()
 
     def on_close(self):
+        # Vraag bij afsluiten eerst bevestiging als de drone nog vliegt.
         if self.app.airborne and not messagebox.askyesno(
                 "Afsluiten", "De drone vliegt nog. Landen en afsluiten?"):
             return
@@ -1072,6 +1134,7 @@ class PatternDialog:
     """Raster ('grasmaaier') pattern to scan an area (camera + terrain)."""
 
     def __init__(self, root, gui):
+        # Hulppopup waarmee een systematisch scanpatroon kan worden gegenereerd.
         self.gui = gui
         top = self.top = tk.Toplevel(root, bg=C["card"], padx=14, pady=12)
         top.title("Rasterpad")
@@ -1103,14 +1166,17 @@ class PatternDialog:
         top.grab_set()
 
     def _values(self):
+        # Lees de rasterparameters uit de invoervelden.
         return {k: float(v.get().replace(",", ".")) for k, v in self.vars.items()}
 
     def _footprint(self, z):
+        # Schat hoeveel breedte de camera op hoogte z kan bestrijken.
         """Width of the floor the camera sees across the flight direction (lanes go along x)."""
         w = 2 * z * math.tan(math.radians(cfg.CAM_HFOV_DEG) / 2)
         return w * 0.75 if cfg.CAM_ROTATE_DEG % 180 else w   # turned image: narrow side across
 
     def _hint(self, set_spacing=False):
+        # Geef feedback over de gekozen hoogte en ideale baanafstand.
         try:
             z = float(self.vars["z"].get())
         except ValueError:
@@ -1123,6 +1189,7 @@ class PatternDialog:
                                  f"geen stuk vloer gemist wordt.")
 
     def make(self):
+        # Genereer het rasterpad en controleer het op geofence-validiteit.
         try:
             v = self._values()
         except ValueError:
