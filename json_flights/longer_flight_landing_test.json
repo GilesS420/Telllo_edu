@@ -1,0 +1,13 @@
+{
+    "type":"mission",
+    "id":"gui-5",
+    "speed":30,
+    "land_at_end":true,
+    "nav_mode":"go",
+    "fine":"auto",
+    "waypoints":[
+        [300.0, 0.0, 80.0],
+        [300.0, 250.0, 80.0],
+        [0.0, 0.0, 80.0]
+    ]
+}
