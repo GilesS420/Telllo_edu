@@ -239,14 +239,17 @@ stuurt. De richting wordt pas gecorrigeerd vanaf `YAW_TOL_DEG` (6°).
 
 ### Landen op een H (helipad)
 
-Ligt er een landingsplatform met een **H** in de buurt van het laatste waypoint, dan landt de
-drone in het midden van de H (`HELIPAD_LAND`, `drone/helipad.py`):
+Ziet de drone tijdens een missie (met `land_at_end`) ergens een landingsplatform met een
+**H**, dan landt hij aan het einde in het midden van die H (`HELIPAD_LAND`, `drone/helipad.py`):
 
-1. Tijdens de vlucht en bij het eindpunt zoekt de onderste camera naar een H. Ziet hij er
-   geen, dan stijgt hij boven het eindpunt naar `HELIPAD_SEARCH_HEIGHT_CM` (150 cm), waar de
-   camera meer van de vloer ziet, en kijkt opnieuw.
-2. Een H telt alleen binnen `HELIPAD_RADIUS_CM` (80 cm) van het laatste waypoint. Anders
-   landt hij gewoon op de coördinaten.
+1. Tijdens de hele vlucht zoekt de onderste camera naar een H en onthoudt waar hij die ziet.
+   Is de H op dezelfde plek minstens `HELIPAD_MIN_SIGHTINGS` (3) keer gezien, dan vliegt de
+   drone na het laatste punt terug naar die plek (de mediaan van de waarnemingen). Eén losse
+   foute detectie stuurt hem dus niet weg.
+2. Geen H gezien onderweg: hij kijkt nog boven het eindpunt, binnen `HELIPAD_RADIUS_CM`
+   (80 cm). Ziet hij er geen, dan stijgt hij naar `HELIPAD_SEARCH_HEIGHT_CM` (150 cm), waar de
+   camera meer van de vloer ziet, en kijkt opnieuw. Nog altijd niets: gewoon landen op de
+   coördinaten van het laatste punt.
 3. De drone stuurt zich boven het midden van de H en daalt alleen als hij erboven gecentreerd
    is (`HELIPAD_CENTER_TOL_CM`, 6 cm). De H wordt in elk camerabeeld opnieuw gemeten, dus hij
    blijft corrigeren tijdens het dalen.
@@ -255,10 +258,29 @@ drone in het midden van de H (`HELIPAD_LAND`, `drone/helipad.py`):
 
 De detectie werkt zonder training: een donkere H op licht papier of een lichte H op een donker
 platform, in elke richting gedraaid, vierkant of hoger dan breed. Andere vormen (vlekken,
-tegels, randen) worden niet als H gezien: in de simulator 0 valse meldingen op 350 beelden
-van de vloer. Maak de H minstens 15–20 cm groot, in een **vet lettertype zonder schreven**
-(Arial Black, of gewoon drie rechthoeken), met balken van minstens een zesde van de breedte,
-en het papier wat groter dan de H. Dunne letters of letters met voetjes (Times) worden niet
+tegels, randen, letters zoals T, U, E) worden niet als H gezien: 0 valse meldingen op 360
+testbeelden van vloeren met tape, dozen en letters, en op 400 simulatorbeelden.
+
+**Hoogte.** Hoe hoger de drone, hoe kleiner de H in het (al kleine, wazige) beeld van de onderste
+camera. De H wordt daarom op twee manieren uit het beeld gehaald: met één drempel voor het hele
+beeld en met een drempel t.o.v. de helderheid er vlak rond (`HELIPAD_ADAPTIVE`). Die tweede
+blijft werken als de H klein is en de vloer rond het papier de helderheid van het beeld bepaalt.
+Met de hoogte uit de ToF-sensor worden vlekken die op die hoogte geen echte H kunnen zijn
+(kleiner dan 8 of groter dan 60 cm, `HELIPAD_SIZE_RANGE_CM`) overgeslagen. Gemeten op testbeelden
+met een wazige camera en een H van 15 cm:
+
+| Hoogte | 140 cm | 180 cm | 220 cm | 260 cm |
+|---|---|---|---|---|
+| Vroeger | 27/30 | 16/30 | 1/30 | 0/30 |
+| Nu | 28/30 | 28/30 | 20/30 | 18/30 |
+
+Wil je nog hoger zoeken, maak de H dan groter: de grens schuift evenredig mee (een H van 30 cm
+wordt tot ongeveer twee keer zo hoog gezien als een van 15 cm).
+
+Maak de H minstens 15–20 cm groot, in een **vet lettertype zonder schreven** (Arial Black, of
+gewoon drie rechthoeken), met balken van minstens een zesde van de breedte, en het papier wat
+groter dan de H (een witte rand van een paar cm rondom). Mat papier werkt beter dan glanzend
+(geen weerspiegeling van de lampen). Dunne letters of letters met voetjes (Times) worden niet
 herkend.
 
 **Controleren of hij de H ziet**: de detectie draait ook op de grond. Zet de GUI aan met
@@ -280,10 +302,9 @@ De knop *Landen* breekt het af.
 
 * `"level": true`: de drone houdt de hoogte van na het opstijgen en past ze nooit aan voor de
   vloer (de ToF-afstand), ook niet bij grote verschillen.
-* `"helipad_search": true`: elke keer dat de camera onderweg een H ziet, wordt de plek
-  onthouden. Na het laatste punt vliegt de drone terug naar die plek (de mediaan van alle
-  waarnemingen) en landt in het midden van de H. Is er tijdens de hele vlucht geen H gezien,
-  dan vliegt hij terug naar het **eerste** punt en landt daar.
+* `"helipad_search": true`: zoals altijd landt hij op een H die onderweg gezien is. Is er
+  tijdens de hele vlucht geen H gezien, dan vliegt hij terug naar het **eerste** punt en landt
+  daar (in plaats van op het laatste).
 
 In de simulator (`--sim`) ligt een H op (10, −30). Een missie die op (0, 0) eindigt, landt erop,
 net als *Landen op de H* vanaf de startplek.

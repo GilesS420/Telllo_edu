@@ -213,7 +213,7 @@ class TelloGUI:
         ttk.Checkbutton(box, text="Zelfde hoogte houden (vloer niet volgen)",
                         variable=self.level).pack(anchor=tk.W, pady=(4, 0))
         self.helipad_search = tk.BooleanVar(value=False)
-        ttk.Checkbutton(box, text="Landen op gevonden H (anders 1e punt)",
+        ttk.Checkbutton(box, text="Geen H gezien: landen op het 1e punt",
                         variable=self.helipad_search).pack(anchor=tk.W, pady=(4, 0))
 
         # --- waypoint entry
