@@ -252,9 +252,18 @@ Ziet de drone tijdens een missie (met `land_at_end`) ergens een landingsplatform
    coördinaten van het laatste punt.
 3. De drone stuurt zich boven het midden van de H en daalt alleen als hij erboven gecentreerd
    is (`HELIPAD_CENTER_TOL_CM`, 6 cm). De H wordt in elk camerabeeld opnieuw gemeten, dus hij
-   blijft corrigeren tijdens het dalen.
-4. Op `HELIPAD_FINAL_CM` (40 cm), of zodra de H de helft van het beeld vult, volgt de gewone
-   `land`.
+   blijft corrigeren tijdens het dalen. Het midden is het midden van de dwarsbalk (de "-").
+4. Onder ~45 cm past de H niet meer in het beeld. Dan volgt hij alleen nog die dwarsbalk:
+   halverwege de binnenkanten van de twee staande balken (`find_center`). Zo blijft hij tot
+   op ~1 cm meten tot vlak boven de H.
+5. Op `HELIPAD_FINAL_CM` (25 cm) wacht hij tot hij minstens `HELIPAD_LAND_STABLE_S` (0,5 s)
+   binnen `HELIPAD_LAND_TOL_CM` (2,5 cm) van het midden hangt, en stuurt dan meteen `land`.
+   Een kleine blijvende duw (`HELIPAD_KI`) houdt hem op zijn plek tegen wind en drift.
+   Kwijt in het laatste stuk: hij stijgt een beetje tot hij de H terugziet en daalt opnieuw.
+
+In de simulator (16 vluchten, met wind en zijwaartse drift bij het landen) staat de drone bij
+`land` gemiddeld 2 cm naast het midden (eerst 6,5 cm), en na de landing 7 cm (eerst 14 cm).
+Het laatste stuk is de drift van de `land` zelf.
 
 De detectie werkt zonder training: een donkere H op licht papier of een lichte H op een donker
 platform, in elke richting gedraaid, vierkant of hoger dan breed. Andere vormen (vlekken,

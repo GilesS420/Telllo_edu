@@ -243,15 +243,17 @@ class PathFollower:
         self._last_rc = time.time()
         self.tello.send_rc_control(lr, fb, ud, yv)
 
-    def command(self, fn, *args):
+    def command(self, fn, *args, settle=True):
         """
         Send an SDK command (go, cw/ccw, land, ...). The Tello answers 'error Not
         joystick' when such a command arrives while it is still busy with rc (stick)
         commands, e.g. right after the recentering at takeoff or precise
-        positioning: wait until it has settled, and retry.
+        positioning: wait until it has settled, and retry. settle=False: try at
+        once (for 'land': every second of waiting the drone can drift off its
+        spot), and only wait when the Tello refuses.
         """
         wait = cfg.RC_SETTLE_S - (time.time() - self._last_rc)
-        if wait > 0:
+        if wait > 0 and settle:
             time.sleep(wait)
         for attempt in range(3):
             try:
