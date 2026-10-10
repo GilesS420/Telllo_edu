@@ -60,6 +60,8 @@ LAND_DESCENT_CMS = 25       # descent speed (cm/s) during the precise landing
 # Helipad: land in the middle of an "H" landing pad (drone/helipad.py)
 HELIPAD_LAND = True         # mission end: look for an H near the last waypoint and land on it
 HELIPAD_RADIUS_CM = 80      # only an H within this distance of the last waypoint counts
+                            # (an H seen anywhere during the mission is always used)
+HELIPAD_MIN_SIGHTINGS = 3   # an H must be seen this often at one place to fly back to it
                             # (the camera sees about +-45 cm around the drone at 80 cm, +-85 at 150)
 HELIPAD_SEARCH_S = 2.0      # hover this long at the end point looking for the H
 HELIPAD_SEARCH_HEIGHT_CM = 150  # not found: climb to this height (sees more floor) and look again

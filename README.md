@@ -239,14 +239,17 @@ stuurt. De richting wordt pas gecorrigeerd vanaf `YAW_TOL_DEG` (6°).
 
 ### Landen op een H (helipad)
 
-Ligt er een landingsplatform met een **H** in de buurt van het laatste waypoint, dan landt de
-drone in het midden van de H (`HELIPAD_LAND`, `drone/helipad.py`):
+Ziet de drone tijdens een missie (met `land_at_end`) ergens een landingsplatform met een
+**H**, dan landt hij aan het einde in het midden van die H (`HELIPAD_LAND`, `drone/helipad.py`):
 
-1. Tijdens de vlucht en bij het eindpunt zoekt de onderste camera naar een H. Ziet hij er
-   geen, dan stijgt hij boven het eindpunt naar `HELIPAD_SEARCH_HEIGHT_CM` (150 cm), waar de
-   camera meer van de vloer ziet, en kijkt opnieuw.
-2. Een H telt alleen binnen `HELIPAD_RADIUS_CM` (80 cm) van het laatste waypoint. Anders
-   landt hij gewoon op de coördinaten.
+1. Tijdens de hele vlucht zoekt de onderste camera naar een H en onthoudt waar hij die ziet.
+   Is de H op dezelfde plek minstens `HELIPAD_MIN_SIGHTINGS` (3) keer gezien, dan vliegt de
+   drone na het laatste punt terug naar die plek (de mediaan van de waarnemingen). Eén losse
+   foute detectie stuurt hem dus niet weg.
+2. Geen H gezien onderweg: hij kijkt nog boven het eindpunt, binnen `HELIPAD_RADIUS_CM`
+   (80 cm). Ziet hij er geen, dan stijgt hij naar `HELIPAD_SEARCH_HEIGHT_CM` (150 cm), waar de
+   camera meer van de vloer ziet, en kijkt opnieuw. Nog altijd niets: gewoon landen op de
+   coördinaten van het laatste punt.
 3. De drone stuurt zich boven het midden van de H en daalt alleen als hij erboven gecentreerd
    is (`HELIPAD_CENTER_TOL_CM`, 6 cm). De H wordt in elk camerabeeld opnieuw gemeten, dus hij
    blijft corrigeren tijdens het dalen.
@@ -299,10 +302,9 @@ De knop *Landen* breekt het af.
 
 * `"level": true`: de drone houdt de hoogte van na het opstijgen en past ze nooit aan voor de
   vloer (de ToF-afstand), ook niet bij grote verschillen.
-* `"helipad_search": true`: elke keer dat de camera onderweg een H ziet, wordt de plek
-  onthouden. Na het laatste punt vliegt de drone terug naar die plek (de mediaan van alle
-  waarnemingen) en landt in het midden van de H. Is er tijdens de hele vlucht geen H gezien,
-  dan vliegt hij terug naar het **eerste** punt en landt daar.
+* `"helipad_search": true`: zoals altijd landt hij op een H die onderweg gezien is. Is er
+  tijdens de hele vlucht geen H gezien, dan vliegt hij terug naar het **eerste** punt en landt
+  daar (in plaats van op het laatste).
 
 In de simulator (`--sim`) ligt een H op (10, −30). Een missie die op (0, 0) eindigt, landt erop,
 net als *Landen op de H* vanaf de startplek.

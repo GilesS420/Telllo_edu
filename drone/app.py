@@ -359,19 +359,32 @@ class DroneApp:
         self.link.send({"type": "mission_done", "id": self.mission_id,
                         "helipad": self._helipad_msg()})
         try:
-            if land_at_end and helipad_search:
+            if land_at_end and cfg.HELIPAD_LAND and self.seen_helipad() is not None:
+                # an H seen anywhere on the way is the landing spot
                 self.land_on_seen_helipad(waypoints[0], speed)
+            elif land_at_end and helipad_search:
+                self.land_on_seen_helipad(waypoints[0], speed)   # no H: first point
             elif land_at_end:
-                self.safe_land(spot=waypoints[-1][:2])
+                self.safe_land(spot=waypoints[-1][:2])   # (still looks for an H there)
         except MissionAborted:
             self.safe_land()
 
     def seen_helipad(self):
-        """Position of the H seen during this mission (median of the sightings), or None."""
-        if not self.pads:
+        """
+        Position of the H seen during this mission, or None. The sightings are
+        grouped by place; the place seen most often (at least HELIPAD_MIN_SIGHTINGS
+        times, so one wrong detection doesn't count) wins, its median is returned.
+        """
+        pads = list(self.pads)
+        best = []
+        for _, x, y, _ in pads:
+            near = [p for p in pads if math.hypot(p[1] - x, p[2] - y) < 30]
+            if len(near) > len(best):
+                best = near
+        if len(best) < cfg.HELIPAD_MIN_SIGHTINGS:
             return None
-        xs = sorted(p[1] for p in self.pads)
-        ys = sorted(p[2] for p in self.pads)
+        xs = sorted(p[1] for p in best)
+        ys = sorted(p[2] for p in best)
         return xs[len(xs) // 2], ys[len(ys) // 2]
 
     def _helipad_msg(self):
@@ -380,9 +393,9 @@ class DroneApp:
 
     def land_on_seen_helipad(self, first_wp, speed):
         """
-        End of a helipad_search mission: fly back to where the H was seen and land
-        on it. No H seen during the whole flight: fly back to the first waypoint and
-        land there.
+        End of a mission: fly back to where the H was seen and land on it. No H
+        seen during the whole flight (helipad_search): fly back to the first
+        waypoint and land there.
         """
         z = self.pose.get()[2]
         pad = self.seen_helipad()
