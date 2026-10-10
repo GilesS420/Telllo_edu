@@ -3,7 +3,11 @@ Helipad ("H") detection on the downward camera, for landing on a landing pad.
 
 A printed H (dark on light paper, or light on a dark pad) is found with plain
 image processing, no training needed:
-1. threshold the image both ways (Otsu), so both colour versions work;
+1. threshold the image both ways, so both colour versions work: once for the
+   whole image (Otsu) and once against the local brightness around every pixel
+   (adaptive). From higher up the H is small and the floor around the paper
+   decides the global threshold; the local one still separates the H from its
+   paper;
 2. every blob with roughly square outline that fills its hull only partly
    (the two gaps of an H) is straightened along its smallest enclosing
    rectangle, so the rotation doesn't matter;
@@ -18,7 +22,7 @@ import cv2
 import numpy as np
 
 from . import config as cfg
-from .downcam import DownCam
+from .downcam import DownCam, cm_per_pixel
 
 
 N = 48   # size of the straightened blob
@@ -50,38 +54,56 @@ class Helipad:
 
 
 class HelipadDetector:
-    def find(self, gray):
-        """Best Helipad in an already prepared (grey, cropped) image, or None."""
+    def find(self, gray, height_cm=None):
+        """
+        Best Helipad in an already prepared (grey, cropped) image, or None.
+        height_cm (ToF): when given, blobs that can't be an H of a real size
+        (HELIPAD_SIZE_RANGE_CM) at that height are skipped.
+        """
         H, W = gray.shape
-        blur = cv2.GaussianBlur(gray, (5, 5), 0)
+        size_px = None
+        if height_cm and height_cm > 10:
+            cm_px = cm_per_pixel(W, height_cm)
+            size_px = tuple(v / cm_px for v in cfg.HELIPAD_SIZE_RANGE_CM)
+        blur = cv2.GaussianBlur(gray, (3, 3), 0)
         _, dark = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        masks = [dark, 255 - dark]   # dark H on light paper / light H on dark pad
+        if cfg.HELIPAD_ADAPTIVE:
+            block = cfg.HELIPAD_ADAPTIVE_BLOCK | 1
+            for mode in (cv2.THRESH_BINARY_INV, cv2.THRESH_BINARY):
+                masks.append(cv2.adaptiveThreshold(blur, 255, cv2.ADAPTIVE_THRESH_MEAN_C, mode,
+                                                   block, cfg.HELIPAD_ADAPTIVE_C))
         best = None
-        for mask in (dark, 255 - dark):   # dark H on light paper / light H on dark pad
+        for mask in masks:
             contours, _ = cv2.findContours(mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
             for c in contours:
-                cand = self._check(c, W, H)
+                cand = self._check(c, W, H, size_px)
                 if cand and (best is None or cand.score < best.score):
                     best = cand
         return best
 
     @staticmethod
-    def _check(c, W, H):
+    def _check(c, W, H, size_px=None):
         area = cv2.contourArea(c)
         if area < cfg.HELIPAD_MIN_AREA_PX or area > 0.5 * W * H:
             return None
         x, y, w, h = cv2.boundingRect(c)
         if x <= 1 or y <= 1 or x + w >= W - 1 or y + h >= H - 1:
             return None   # cut off by the image edge: centre would be wrong
-        (_, _), (rw, rh), _ = cv2.minAreaRect(c)
+        rect = cv2.minAreaRect(c)
+        rw, rh = rect[1]
         if min(rw, rh) <= 0 or max(rw, rh) / min(rw, rh) > 1.8:
             return None
+        if size_px and not size_px[0] <= max(rw, rh) <= size_px[1]:
+            return None   # far too small or too big for an H at this height
         hull = cv2.contourArea(cv2.convexHull(c))
         if hull <= 0 or not 0.4 <= area / hull <= 0.85:
             return None   # an H fills its hull only partly (two gaps)
-        box = cv2.boxPoints(cv2.minAreaRect(c)).astype(np.float32)
+        # straighten the blob (drawn in a small image around it, not the whole frame)
+        blob = np.zeros((h + 2, w + 2), np.uint8)
+        cv2.drawContours(blob, [c - (x - 1, y - 1)], -1, 1, -1)
+        box = (cv2.boxPoints(rect) - (x - 1, y - 1)).astype(np.float32)
         warp = cv2.getAffineTransform(box[:3], np.float32([[0, N], [0, 0], [N, 0]]))
-        blob = np.zeros((H, W), np.uint8)
-        cv2.drawContours(blob, [c], -1, 1, -1)
         score = _h_score(cv2.warpAffine(blob, warp, (N, N), flags=cv2.INTER_NEAREST))
         if score is None or score > cfg.HELIPAD_MAX_SCORE:
             return None

@@ -255,10 +255,29 @@ drone in het midden van de H (`HELIPAD_LAND`, `drone/helipad.py`):
 
 De detectie werkt zonder training: een donkere H op licht papier of een lichte H op een donker
 platform, in elke richting gedraaid, vierkant of hoger dan breed. Andere vormen (vlekken,
-tegels, randen) worden niet als H gezien: in de simulator 0 valse meldingen op 350 beelden
-van de vloer. Maak de H minstens 15–20 cm groot, in een **vet lettertype zonder schreven**
-(Arial Black, of gewoon drie rechthoeken), met balken van minstens een zesde van de breedte,
-en het papier wat groter dan de H. Dunne letters of letters met voetjes (Times) worden niet
+tegels, randen, letters zoals T, U, E) worden niet als H gezien: 0 valse meldingen op 360
+testbeelden van vloeren met tape, dozen en letters, en op 400 simulatorbeelden.
+
+**Hoogte.** Hoe hoger de drone, hoe kleiner de H in het (al kleine, wazige) beeld van de onderste
+camera. De H wordt daarom op twee manieren uit het beeld gehaald: met één drempel voor het hele
+beeld en met een drempel t.o.v. de helderheid er vlak rond (`HELIPAD_ADAPTIVE`). Die tweede
+blijft werken als de H klein is en de vloer rond het papier de helderheid van het beeld bepaalt.
+Met de hoogte uit de ToF-sensor worden vlekken die op die hoogte geen echte H kunnen zijn
+(kleiner dan 8 of groter dan 60 cm, `HELIPAD_SIZE_RANGE_CM`) overgeslagen. Gemeten op testbeelden
+met een wazige camera en een H van 15 cm:
+
+| Hoogte | 140 cm | 180 cm | 220 cm | 260 cm |
+|---|---|---|---|---|
+| Vroeger | 27/30 | 16/30 | 1/30 | 0/30 |
+| Nu | 28/30 | 28/30 | 20/30 | 18/30 |
+
+Wil je nog hoger zoeken, maak de H dan groter: de grens schuift evenredig mee (een H van 30 cm
+wordt tot ongeveer twee keer zo hoog gezien als een van 15 cm).
+
+Maak de H minstens 15–20 cm groot, in een **vet lettertype zonder schreven** (Arial Black, of
+gewoon drie rechthoeken), met balken van minstens een zesde van de breedte, en het papier wat
+groter dan de H (een witte rand van een paar cm rondom). Mat papier werkt beter dan glanzend
+(geen weerspiegeling van de lampen). Dunne letters of letters met voetjes (Times) worden niet
 herkend.
 
 **Controleren of hij de H ziet**: de detectie draait ook op de grond. Zet de GUI aan met

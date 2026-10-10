@@ -562,10 +562,11 @@ class DroneApp:
         # Also on the ground, so you can test it by holding the drone above the H
         # (it is drawn green in the GUI camera view)
         # (only on the downward camera: an H on a wall is no landing pad)
-        pad = (self.pad_detector.find(gray)
+        height = self.read_height(default=None)   # ToF, also when held in the hand
+        pad = (self.pad_detector.find(gray, height)
                if cfg.HELIPAD_LAND and self.downvision_enabled else None)
         if pad is not None and self.airborne:
-            height = self.read_height(default=pose[2])
+            height = height or pose[2]
             if height >= 15:
                 h, w = gray.shape
                 x, y, _ = pixel_to_world(pad.cx, pad.cy, w, h, height, pose)

@@ -69,7 +69,11 @@ HELIPAD_FINAL_CM = 40       # centred at this height -> normal 'land' for the la
 HELIPAD_FINAL_SIZE = 0.5    # ... or as soon as the H is this part of the image width
 HELIPAD_DESCENT_CMS = 20    # descent speed above the H
 HELIPAD_TIMEOUT_S = 25      # give up (normal landing) after this time
-HELIPAD_MIN_AREA_PX = 300   # smallest H blob (pixels) that counts
+HELIPAD_MIN_AREA_PX = 60    # smallest H blob (pixels) that counts (about 10 x 10 px)
+HELIPAD_SIZE_RANGE_CM = (8, 60)  # an H is between these sizes (only checked with a height)
+HELIPAD_ADAPTIVE = True     # also threshold against the local brightness (H seen from higher up)
+HELIPAD_ADAPTIVE_BLOCK = 41  # pixels, neighbourhood for that local brightness
+HELIPAD_ADAPTIVE_C = 6       # pixel must be this much darker/brighter than its neighbourhood
 HELIPAD_MAX_SCORE = 0.4     # difference with an ideal H (0 = perfect), higher = looser
 
 # Heading hold: keep the nose in the start direction (IMU yaw)
