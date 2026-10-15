@@ -70,14 +70,20 @@ HELIPAD_SEARCH_S = 2.0      # hover this long at the end point looking for the H
 HELIPAD_SEARCH_HEIGHT_CM = 150  # not found: climb to this height (sees more floor) and look again
 HELIPAD_CLIMB_CMS = 30      # climb speed for that
 HELIPAD_CENTER_TOL_CM = 6   # only descend while the H is this close below the drone centre
-HELIPAD_LAND_TOL_CM = 2.5   # final: the middle of the H must be this close below the drone ...
-HELIPAD_LAND_STABLE_S = 0.5  # ... for this long (s) before 'land'
+HELIPAD_LAND_TOL_CM = 3     # final: the middle of the H must be this close below the drone
+                            # (on average) ...
+HELIPAD_LAND_STABLE_S = 0.5  # ... hanging still there this long (s) before 'land'
 HELIPAD_FINAL_CM = 25       # centred at this height -> normal 'land' for the last bit
                             # (below ~45 cm the H doesn't fit in the image any more: the
                             # middle of its cross bar "-" is followed instead)
 HELIPAD_BAR_JUMP_CM = 12    # a cross bar seen further than this from the H is ignored
-HELIPAD_DESCENT_CMS = 20    # descent speed above the H
-HELIPAD_KI = 0.6            # 1/s, extra push per cm of error that lasts (wind, drift)
+HELIPAD_DESCENT_CMS = 20    # descent speed above the H (x1.5 above 60 cm)
+HELIPAD_PREDICT_S = 0.6     # steer on where the drone will be this much later (video delay +
+                            # reaction time): it brakes before the H instead of overshooting
+HELIPAD_SPEED_WINDOW_S = 0.5  # speed of the drone measured over this time
+HELIPAD_BRAKE_CMS2 = 15     # never faster than it can stop on the H with this braking (cm/s²)
+HELIPAD_STILL_CMS = 4       # slower than this counts as hanging still
+HELIPAD_KI = 0.5            # 1/s, extra push per cm of error that lasts (wind, drift)
 HELIPAD_I_MAX_CMS = 8       # ... up to this speed
 HELIPAD_TIMEOUT_S = 40      # give up (normal landing) after this time
 HELIPAD_MIN_AREA_PX = 60    # smallest H blob (pixels) that counts (about 10 x 10 px)
