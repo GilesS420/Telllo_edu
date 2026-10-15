@@ -24,7 +24,7 @@ import traceback
 import cv2
 
 from . import config as cfg
-from .downcam import DownCam, pixel_to_world
+from .downcam import DownCam, cm_per_pixel, pixel_to_world
 from .helipad import HelipadDetector, draw_helipad
 from .jetson_link import JetsonLink
 from .navigator import MissionAborted, PathFollower, Pose, validate_waypoints
@@ -54,6 +54,8 @@ class DroneApp:
         self.cam = DownCam()
         self.pad_detector = HelipadDetector()
         self.pads = []               # H sightings this mission: (t, x, y, size), newest last
+        self._pad_ref = None         # (t, Helipad, size cm) last full view of the H (for find_center)
+        self._pad_target = None      # (x, y) the landing on the H aims at right now
         self.frame_id = 0            # +1 on every new mission frame (the GUI clears its trail)
         self._pose_set = False       # set_pose was used: keep that frame at the next takeoff
         self._frame = None
@@ -289,7 +291,7 @@ class DroneApp:
                 print(f"⚠️  Precies landen mislukt ({e}), gewoon landen")
         for attempt in range(2):
             try:
-                self.follower.command(self.tello.land)
+                self.follower.command(self.tello.land, settle=False)
                 break
             except Exception as e:
                 print(f"⚠️  Land command failed: {e}")
@@ -465,49 +467,70 @@ class DroneApp:
         if sighting is None:
             print("ℹ️  Geen H gevonden bij het eindpunt: landen op de coördinaten")
             return False
-        t_seen, tx, ty, size = sighting
+        t_seen, tx, ty, _ = sighting
         print(f"🛬 H gevonden op ({tx:.0f}, {ty:.0f}): erboven centreren en dalen")
         period = 1.0 / cfg.RC_HZ
         deadline = time.time() + cfg.HELIPAD_TIMEOUT_S
+        good_since = None  # since when the drone stays within LAND_TOL of the middle
+        ix = iy = 0.0     # summed error: the steady push that holds the drone against drift
+        last_err = None   # error at the last fresh measurement
         try:
             while time.time() < deadline:
                 f._check_abort()
                 new = self._pad_near(end_xy, t_seen + 1e-6)
-                if new:   # fresh measurement of the H (smoothed a little)
-                    t_seen, size = new[0], new[3]
-                    tx, ty = 0.4 * tx + 0.6 * new[1], 0.4 * ty + 0.6 * new[2]
                 x, y, z, _ = self.pose.get()
+                if new:   # fresh measurement of the H (smoothed a little)
+                    t_seen = new[0]
+                    tx, ty = 0.4 * tx + 0.6 * new[1], 0.4 * ty + 0.6 * new[2]
+                    last_err = math.hypot(tx - x, ty - y)
+                    if last_err >= cfg.HELIPAD_LAND_TOL_CM:
+                        good_since = None
+                    elif good_since is None:
+                        good_since = time.time()
+                self._pad_target = (tx, ty)
                 ex, ey = tx - x, ty - y
                 err = math.hypot(ex, ey)
                 lost = time.time() - t_seen
                 if lost > 3.0 and not self.pose.measured:
                     print("⚠️  H en odometrie kwijt: hier landen")
                     return True
-                # low enough, or the H almost fills the image (lower it would
-                # get cut off by the image edge and can't be seen any more)
-                big = size >= cfg.HELIPAD_FINAL_SIZE and lost < 1.0
-                if err < cfg.HELIPAD_CENTER_TOL_CM and (z <= cfg.HELIPAD_FINAL_CM or big):
-                    print(f"🎯 Boven het midden van de H ({err:.0f} cm ernaast)")
+                # low enough and steadily above the middle of the H: land
+                # (for a while: not just passing through the middle)
+                low = z <= cfg.HELIPAD_FINAL_CM + 3   # (the ToF height wobbles a bit)
+                if (low and good_since is not None and lost < 0.5
+                        and time.time() - good_since >= cfg.HELIPAD_LAND_STABLE_S):
+                    print(f"🎯 Boven het midden van de H ({last_err:.0f} cm ernaast, {z:.0f} cm hoog)")
                     return True
                 # only come down while centred and the H is in view; otherwise
                 # hold the height and steer back above it
                 centred = err < cfg.HELIPAD_CENTER_TOL_CM * (2 if z > 60 else 1)
-                vz = -cfg.HELIPAD_DESCENT_CMS if centred and lost < 1.0 else 0.0
+                vz = -cfg.HELIPAD_DESCENT_CMS if centred and lost < 1.0 and not low else 0.0
                 if lost > 1.5 and z < 120:
                     vz = cfg.HELIPAD_DESCENT_CMS   # H out of view: go up a bit to find it again
-                vx, vy = cfg.RC_GAIN * ex, cfg.RC_GAIN * ey
+                gain = cfg.RC_GAIN if z > 60 else cfg.RC_GAIN * 0.7   # calmer close to the H
+                if err > 2 * cfg.HELIPAD_CENTER_TOL_CM:
+                    ix = iy = 0.0   # still on the way: only hold-against-drift counts
+                elif lost < 0.5:
+                    lim = cfg.HELIPAD_I_MAX_CMS / cfg.HELIPAD_KI
+                    ix = max(-lim, min(lim, ix + ex * period))
+                    iy = max(-lim, min(lim, iy + ey * period))
+                vx, vy = gain * ex + cfg.HELIPAD_KI * ix, gain * ey + cfg.HELIPAD_KI * iy
                 n = math.hypot(vx, vy)
-                if n > 15:
-                    vx, vy = vx * 15 / n, vy * 15 / n
+                vmax = 15 if z > 60 else 10
+                if n > vmax:
+                    vx, vy = vx * vmax / n, vy * vmax / n
                 if not self.pose.measured and lost > 0.5:
                     # no odometry and no fresh view of the H: the position doesn't
                     # update, steering on it would fly the drone away. Hold still.
                     vx = vy = 0.0
-                f.send_velocity(vx, vy, vz, min_units=0 if centred else cfg.RC_MIN_UNITS)
+                # small corrections need the minimum rc value, or the Tello ignores them
+                push = err > cfg.HELIPAD_LAND_TOL_CM and (vx or vy)
+                f.send_velocity(vx, vy, vz, min_units=cfg.RC_MIN_UNITS if push and vz == 0 else 0)
                 time.sleep(period)
             print(f"ℹ️  H: na {cfg.HELIPAD_TIMEOUT_S}s nog niet gecentreerd, hier landen")
             return True
         finally:
+            self._pad_target = None
             self.follower.rc(0, 0, 0, 0)
 
     def read_height(self, default):
@@ -578,14 +601,29 @@ class DroneApp:
         height = self.read_height(default=None)   # ToF, also when held in the hand
         pad = (self.pad_detector.find(gray, height)
                if cfg.HELIPAD_LAND and self.downvision_enabled else None)
+        h, w = gray.shape
+        if pad is not None:
+            self._pad_ref = (t_frame, pad, pad.size_px * cm_per_pixel(w, height) if height else None)
+        elif (self._pad_target is not None and self._pad_ref is not None and height
+                and height < 70 and t_frame - self._pad_ref[0] < 10):
+            # landing, close above the H: it no longer fits in the image, so follow
+            # the middle of its cross bar ("-") instead
+            _, ref, size_cm = self._pad_ref
+            size_px = size_cm / cm_per_pixel(w, height) if size_cm else None
+            bar = self.pad_detector.find_center(gray, ref.bar_dir, ref.dark, size_px=size_px)
+            if bar is not None:
+                x, y, _ = pixel_to_world(bar.cx, bar.cy, w, h, height, pose)
+                tx, ty = self._pad_target
+                if math.hypot(x - tx, y - ty) < cfg.HELIPAD_BAR_JUMP_CM:
+                    pad = bar
         if pad is not None and self.airborne:
             height = height or pose[2]
-            if height >= 15:
-                h, w = gray.shape
+            if height >= 10:
                 x, y, _ = pixel_to_world(pad.cx, pad.cy, w, h, height, pose)
                 if not self.pads or t_frame - self.pads[-1][0] > 5:
                     print(f"🛬 H gezien op ({x:.0f}, {y:.0f})")
-                self.pads.append((t_frame, x, y, pad.size_px / w))
+                size = pad.size_px / w if pad.size_px else 1.0   # cross bar only: H > image
+                self.pads.append((t_frame, x, y, size))
                 del self.pads[:-200]
         vis = draw_helipad(cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR), pad)
         with self._vis_lock:
