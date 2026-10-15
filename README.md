@@ -217,7 +217,13 @@ ook zonder wind. Met werkende odometrie corrigeert het script dat nu:
 
 * de odometrie blijft meten terwijl de drone stijgt of daalt (vroeger begon ze bij elke
   hoogteverandering opnieuw, waardoor het afschuiven tijdens het opstijgen niet gemeten werd);
-* na het opstijgen gaat de drone terug boven de startplek (`TAKEOFF_RECENTER`);
+* tijdens het stijgen of dalen zoomt het camerabeeld in of uit; de odometrie schaalt het vorige
+  beeld eerst naar de nieuwe hoogte (met de hoogte van het moment dat het beeld genomen werd).
+  Zonder dat las ze de zoom als een verschuiving naar iets dat opvalt (de H, een tegelrand) en
+  “zag” ze ~20 cm afschuiven dat er niet was, waarna de drone die afstand de andere kant op vloog;
+* na het opstijgen gaat de drone terug boven de startplek (`TAKEOFF_RECENTER`), tot op
+  `TAKEOFF_RECENTER_TOL_CM` (4 cm) en een halve seconde stil daar, met een extra duw tegen een
+  blijvende luchtstroom (`HOLD_I_GAIN`). Daarna toont het log `🎯 Boven de startplek (x, y cm)`;
 * aan het einde van een missie daalt hij langzaam tot `LAND_HOVER_CM` (30 cm) terwijl hij boven
   het laatste punt blijft, pas daarna volgt de gewone `land` (`PRECISE_LAND`). De knop *Landen*
   en een noodlanding landen meteen, zonder deze stap.

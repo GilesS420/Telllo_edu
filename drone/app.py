@@ -246,9 +246,14 @@ class DroneApp:
         self.state = "flying"
         x, y, _, _ = self.pose.get()
         print(f"✅ In de lucht op {height} cm ({x - x0:+.0f}, {y - y0:+.0f} cm verschoven)")
-        if cfg.TAKEOFF_RECENTER and self.pose.measured and math.hypot(x - x0, y - y0) > 3:
+        if (cfg.TAKEOFF_RECENTER and self.pose.measured
+                and math.hypot(x - x0, y - y0) > cfg.TAKEOFF_RECENTER_TOL_CM):
             print("↩️  Terug boven de startplek")
-            self.follower.hold_position((x0, y0, height))
+            self.follower.hold_position((x0, y0, height), tol=cfg.TAKEOFF_RECENTER_TOL_CM,
+                                        timeout=cfg.TAKEOFF_RECENTER_TIMEOUT_S,
+                                        settle=cfg.TAKEOFF_RECENTER_SETTLE_S)
+            x, y, _, _ = self.pose.get()
+            print(f"🎯 Boven de startplek ({x - x0:+.0f}, {y - y0:+.0f} cm)")
 
     def helipad_test(self):
         """Test without a path: take off (if needed), look for the H here and land on it."""

@@ -458,15 +458,23 @@ class PathFollower:
             self.rc(0, 0, 0, 0)
         return True
 
-    def hold_position(self, target):
-        """Precise positioning on a waypoint with small rc corrections."""
+    def hold_position(self, target, tol=None, timeout=None, settle=0.0):
+        """
+        Precise positioning on a waypoint with small rc corrections. Done when
+        closer than tol (default FINE_TOL_CM) for `settle` seconds, so the drone
+        doesn't coast past the spot right after the sticks are released.
+        """
         if not self.pose.measured:
             return
+        tol = tol or cfg.FINE_TOL_CM
+        timeout = timeout or cfg.FINE_TIMEOUT_S
         t0 = time.time()
-        deadline = t0 + cfg.FINE_TIMEOUT_S
+        deadline = t0 + timeout
         period = 1.0 / cfg.RC_HZ
         max_speed = 20.0
         ex = ey = 0.0
+        ix = iy = 0.0     # integral: pushes harder against a steady drift (air flow)
+        inside = None     # since when the drone is within tol
         e0 = None
         try:
             while time.time() < deadline:
@@ -483,15 +491,23 @@ class PathFollower:
                     return
                 x, y, z, _ = self.pose.get()
                 ex, ey, ez = target[0] - x, target[1] - y, self._dz(target[2] - z)
-                if math.hypot(ex, ey) < cfg.FINE_TOL_CM and abs(ez) < 1.5 * cfg.FINE_TOL_CM:
-                    return
-                v = [cfg.RC_GAIN * e for e in (ex, ey, ez)]
+                if math.hypot(ex, ey) < tol and abs(ez) < 1.5 * max(tol, cfg.FINE_TOL_CM):
+                    inside = inside or time.time()
+                    if time.time() - inside >= settle:
+                        return
+                else:
+                    inside = None
+                lim = cfg.HOLD_I_MAX_CMS / max(cfg.HOLD_I_GAIN, 1e-6)
+                ix = max(-lim, min(lim, ix + ex * period))
+                iy = max(-lim, min(lim, iy + ey * period))
+                v = [cfg.RC_GAIN * ex + cfg.HOLD_I_GAIN * ix,
+                     cfg.RC_GAIN * ey + cfg.HOLD_I_GAIN * iy, cfg.RC_GAIN * ez]
                 n = math.sqrt(sum(c * c for c in v))
                 if n > max_speed:
                     v = [c * max_speed / n for c in v]
                 self.send_velocity(*v, min_units=cfg.RC_MIN_UNITS)
                 time.sleep(period)
-            print(f"ℹ️  Nauwkeurig positioneren: na {cfg.FINE_TIMEOUT_S}s nog "
+            print(f"ℹ️  Nauwkeurig positioneren: na {timeout}s nog "
                   f"{math.hypot(ex, ey):.0f} cm naast het punt")
         finally:
             self.rc(0, 0, 0, 0)
