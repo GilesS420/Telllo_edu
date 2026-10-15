@@ -12,6 +12,7 @@ When the floor has too little texture (or the image is blurred) the odometry is
 "lost" and the pose falls back to the commanded moves, like before.
 """
 
+import collections
 import math
 import threading
 import time
@@ -37,6 +38,7 @@ class Odometry:
         self.downcam_on = downcam_on  # False = the video is the front camera: no odometry
         self.running = True
         self._window = None
+        self._heights = collections.deque(maxlen=60)   # (time, ToF height)
         threading.Thread(target=self._loop, daemon=True).start()
 
     def _gray(self, frame):
@@ -47,19 +49,33 @@ class Odometry:
                               interpolation=cv2.INTER_AREA)
         return gray.astype(np.float32)
 
-    def _compare(self, ref, g):
+    def _compare(self, ref, g, height):
         if self._window is None or self._window.shape != g.shape:
             self._window = cv2.createHanningWindow((g.shape[1], g.shape[0]), cv2.CV_32F)
         if ref["img"].shape != g.shape:
             return (0.0, 0.0), 0.0
-        return cv2.phaseCorrelate(ref["img"], g, self._window)
+        img = ref["img"]
+        zoom = ref["height"] / height
+        if abs(zoom - 1) > cfg.VO_ZOOM_MIN:
+            # Climbing/descending zooms the floor in or out around the image centre.
+            # Without compensation the phase correlation reads that zoom as a shift
+            # towards whatever stands out most (the H, a tile edge): during takeoff
+            # it measured ~20 cm of drift that wasn't there, and the recentering
+            # then flew the drone that far the other way. Scale the reference
+            # image to the current height first, so only the real shift remains.
+            h, w = g.shape
+            m = cv2.getRotationMatrix2D((w / 2, h / 2), 0, zoom)
+            img = cv2.warpAffine(img, m, (w, h), flags=cv2.INTER_LINEAR,
+                                 borderMode=cv2.BORDER_REFLECT)
+        return cv2.phaseCorrelate(img, g, self._window)
 
     @staticmethod
     def _position(ref, shift, width, height):
         """Odometry position for a frame shifted `shift` pixels from reference `ref`."""
         sx, sy = shift
         # floor moves down in the image = drone moves forward, etc.
-        s = cm_per_pixel(width, (height + ref["height"]) / 2)
+        # (_compare scaled the reference to the current height)
+        s = cm_per_pixel(width, height)
         fwd, left = cam_to_body(sy * s * cfg.CAM_FORWARD_SIGN, sx * s * cfg.CAM_LEFT_SIGN)
         ky = math.radians(ref["yaw"])
         return (ref["world"][0] + fwd * math.cos(ky) - left * math.sin(ky),
@@ -71,6 +87,13 @@ class Odometry:
         except Exception:
             return None
         return float(h) if 10 < h < 1000 else None
+
+    def _height_at(self, t, default):
+        """ToF height at time t (the moment a delayed frame was taken)."""
+        for ts, h in reversed(self._heights):
+            if ts <= t:
+                return h
+        return self._heights[0][1] if self._heights else default
 
     def _loop(self):
         """
@@ -116,6 +139,8 @@ class Odometry:
         airborne = self.is_airborne()
         if airborne:
             height = self._height()
+            if height is not None:
+                self._heights.append((t0, height))
             frame = self.frame_reader.frame
             usable = (cfg.VO_ENABLED and not self.pose.vo_disabled and height is not None
                       and height >= cfg.VO_MIN_HEIGHT and frame is not None
@@ -123,20 +148,23 @@ class Odometry:
             if usable and frame is not prev_frame:  # only new frames carry information
                 prev_frame = frame
                 g = self._gray(frame)
-                current = {"img": g, "yaw": yaw, "height": height}
+                # the frame is FRAME_LATENCY_S old: use the height of that moment,
+                # otherwise the zoom correction is off while climbing
+                fh = self._height_at(t0 - cfg.FRAME_LATENCY_S, height)
+                current = {"img": g, "yaw": yaw, "height": fh}
                 if (key is None or key["img"].shape != g.shape
                         or abs(wrap_deg(yaw - key["yaw"])) > cfg.VO_MAX_YAW_STEP
-                        or abs(height / key["height"] - 1) > 0.12):
+                        or abs(fh / key["height"] - 1) > cfg.VO_MAX_ZOOM):
                     # turned or climbed: the old keyframe can't be compared anymore.
                     # While climbing/descending (takeoff, landing, over a box) the
                     # previous frame is still close enough: measure that last step
                     # first, so the drift during a height change is not lost.
                     if (prev is not None and prev["img"].shape == g.shape
                             and abs(wrap_deg(yaw - prev["yaw"])) <= cfg.VO_MAX_YAW_STEP
-                            and abs(height / prev["height"] - 1) <= 0.12):
-                        shift, quality = self._compare(prev, g)
+                            and abs(fh / prev["height"] - 1) <= cfg.VO_MAX_ZOOM):
+                        shift, quality = self._compare(prev, g, fh)
                         if quality >= cfg.VO_MIN_RESPONSE:
-                            new = self._position(prev, shift, g.shape[1], height)
+                            new = self._position(prev, shift, g.shape[1], fh)
                             vo = (new[0] - world[0], new[1] - world[1])
                             world = new
                             last_good = t0
@@ -144,11 +172,11 @@ class Odometry:
                 else:
                     # 1) against the keyframe, 2) if that fails against the previous frame
                     for ref in (key, prev):
-                        shift, quality = self._compare(ref, g)
+                        shift, quality = self._compare(ref, g, fh)
                         if quality >= cfg.VO_MIN_RESPONSE:
                             break
                     if quality >= cfg.VO_MIN_RESPONSE:
-                        new = self._position(ref, shift, g.shape[1], height)
+                        new = self._position(ref, shift, g.shape[1], fh)
                         vo = (new[0] - world[0], new[1] - world[1])
                         world = new
                         last_good = t0
@@ -167,6 +195,7 @@ class Odometry:
             # on the ground: forget the previous frame too, otherwise the first frame
             # of the next flight is compared with the landing of this one (false jump)
             key = prev = prev_frame = None
+            self._heights.clear()
 
         vo_ok = (cfg.VO_ENABLED and not self.pose.vo_disabled and airborne
                  and t0 - last_good < cfg.VO_LOST_S)

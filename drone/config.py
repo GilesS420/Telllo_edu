@@ -52,6 +52,9 @@ FINE_TIMEOUT_S = 4          # give up precise positioning after this time
 
 # The Tello slides sideways while it takes off and lands. With working odometry:
 TAKEOFF_RECENTER = True     # after takeoff, move back above the takeoff spot
+TAKEOFF_RECENTER_TOL_CM = 4  # ... until closer than this (FINE_TOL_CM is much looser)
+TAKEOFF_RECENTER_TIMEOUT_S = 8  # ... but give up after this time
+TAKEOFF_RECENTER_SETTLE_S = 0.5  # ... and stay that close this long (no coasting past it)
 RESET_FRAME_ON_TAKEOFF = True  # new mission frame at every takeoff (see the top of this file)
 PRECISE_LAND = True         # mission end: descend slowly while holding the spot, then land
 LAND_HOVER_CM = 30          # ... down to this height, the last bit is the normal 'land'
@@ -92,6 +95,8 @@ PATH_TOL_CM = 15            # rc mode: up to this far beside the path is fine, t
                             # flies parallel to it; only the part beyond this is corrected
 RC_PASS_CM = 12             # waypoint counts as passed within this distance
 RC_GAIN = 1.2               # 1/s, speed towards the path per cm of error
+HOLD_I_GAIN = 0.6           # 1/s², precise positioning: extra push against a steady drift
+HOLD_I_MAX_CMS = 10         # ... up to this speed (cm/s)
 RC_YAW_GAIN = 1.5           # rc yaw units per degree heading error
 RC_HZ = 15                  # control loop rate
 RC_MIN_UNITS = 8            # smallest rc value that still moves the drone
@@ -134,6 +139,9 @@ VO_MAX_YAW_STEP = 1.5       # deg turned since the keyframe; more = take a new k
 VO_KEY_SHIFT_PX = 20        # new keyframe after this much image shift
 VO_KEY_QUALITY = 0.3        # ... or when the match quality drops below this
 VO_LOST_S = 0.7             # s without good frames = odometry lost
+VO_ZOOM_MIN = 0.01          # height changed more than this part since the reference frame:
+                            # scale the reference first (climbing looks like a zoom, not a shift)
+VO_MAX_ZOOM = 0.12          # frames up to this height difference (part) are still compared
 
 # ---------------------------------------------------------------------------
 # Telemetry (sensor graphs in the GUI) and terrain analysis
