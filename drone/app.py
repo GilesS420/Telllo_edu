@@ -476,61 +476,95 @@ class DroneApp:
         print(f"🛬 H gevonden op ({tx:.0f}, {ty:.0f}): erboven centreren en dalen")
         period = 1.0 / cfg.RC_HZ
         deadline = time.time() + cfg.HELIPAD_TIMEOUT_S
-        good_since = None  # since when the drone stays within LAND_TOL of the middle
+        good_since = None  # since when the drone hangs still above the middle
         ix = iy = 0.0     # summed error: the steady push that holds the drone against drift
+        arrived = False   # has been above the H once (from then on keep that push)
+        avg_err = avg_speed = None   # smoothed over HELIPAD_LAND_STABLE_S
         last_err = None   # error at the last fresh measurement
         try:
             while time.time() < deadline:
                 f._check_abort()
+                now = time.time()
                 new = self._pad_near(end_xy, t_seen + 1e-6)
                 x, y, z, _ = self.pose.get()
                 if new:   # fresh measurement of the H (smoothed a little)
                     t_seen = new[0]
                     tx, ty = 0.4 * tx + 0.6 * new[1], 0.4 * ty + 0.6 * new[2]
                     last_err = math.hypot(tx - x, ty - y)
-                    if last_err >= cfg.HELIPAD_LAND_TOL_CM:
-                        good_since = None
-                    elif good_since is None:
-                        good_since = time.time()
                 self._pad_target = (tx, ty)
+                # where is the drone going? speed from the last few tenths of a second
+                ox, oy, _, _ = self.pose.get(now - cfg.HELIPAD_SPEED_WINDOW_S)
+                vx_now = (x - ox) / cfg.HELIPAD_SPEED_WINDOW_S
+                vy_now = (y - oy) / cfg.HELIPAD_SPEED_WINDOW_S
+                speed = math.hypot(vx_now, vy_now)
                 ex, ey = tx - x, ty - y
                 err = math.hypot(ex, ey)
-                lost = time.time() - t_seen
+                lost = now - t_seen
                 if lost > 3.0 and not self.pose.measured:
                     print("⚠️  H en odometrie kwijt: hier landen")
                     return True
-                # low enough and steadily above the middle of the H: land
-                # (for a while: not just passing through the middle)
+                # The H measurement jitters a few cm from frame to frame: judge the
+                # average error and speed of the last moments, not every single frame
+                # (one jittery frame used to restart the wait, sometimes for 40 s).
+                a = min(1.0, period / cfg.HELIPAD_LAND_STABLE_S)
+                avg_err = err if avg_err is None else (1 - a) * avg_err + a * err
+                avg_speed = speed if avg_speed is None else (1 - a) * avg_speed + a * speed
+                still = (avg_err < cfg.HELIPAD_LAND_TOL_CM and avg_speed < cfg.HELIPAD_STILL_CMS
+                         and err < 2 * cfg.HELIPAD_LAND_TOL_CM)
+                if not still or lost >= 0.5:
+                    good_since = None
+                elif good_since is None:
+                    good_since = now
+                # low enough and hanging still above the middle of the H: land
                 low = z <= cfg.HELIPAD_FINAL_CM + 3   # (the ToF height wobbles a bit)
-                if (low and good_since is not None and lost < 0.5
-                        and time.time() - good_since >= cfg.HELIPAD_LAND_STABLE_S):
-                    print(f"🎯 Boven het midden van de H ({last_err:.0f} cm ernaast, {z:.0f} cm hoog)")
+                if (low and good_since is not None
+                        and now - good_since >= cfg.HELIPAD_LAND_STABLE_S):
+                    print(f"🎯 Boven het midden van de H ({avg_err:.0f} cm ernaast, "
+                          f"{avg_speed:.0f} cm/s, {z:.0f} cm hoog)")
                     return True
-                # only come down while centred and the H is in view; otherwise
-                # hold the height and steer back above it
-                centred = err < cfg.HELIPAD_CENTER_TOL_CM * (2 if z > 60 else 1)
-                vz = -cfg.HELIPAD_DESCENT_CMS if centred and lost < 1.0 and not low else 0.0
+                # Come down while flying towards the H, not only once centred: full
+                # speed when close, slower further away; hold the height when off.
+                near = cfg.HELIPAD_CENTER_TOL_CM * (2 if z > 60 else 1)
+                descent = cfg.HELIPAD_DESCENT_CMS * (1.5 if z > 60 else 1)
+                vz = 0.0
+                if lost < 1.0 and not low:
+                    if err < near:
+                        vz = -descent
+                    elif err < 2 * near:
+                        vz = -descent * (2 - err / near)
                 if lost > 1.5 and z < 120:
                     vz = cfg.HELIPAD_DESCENT_CMS   # H out of view: go up a bit to find it again
+                # Steer on where the drone WILL be (video delay + reaction time), not
+                # where it is: it starts braking before it reaches the H instead of
+                # overshooting and circling around it.
+                px = ex - vx_now * cfg.HELIPAD_PREDICT_S
+                py = ey - vy_now * cfg.HELIPAD_PREDICT_S
+                perr = math.hypot(px, py)
                 gain = cfg.RC_GAIN if z > 60 else cfg.RC_GAIN * 0.7   # calmer close to the H
-                if err > 2 * cfg.HELIPAD_CENTER_TOL_CM:
+                arrived = arrived or err < 2 * cfg.HELIPAD_CENTER_TOL_CM
+                if not arrived:
                     ix = iy = 0.0   # still on the way: only hold-against-drift counts
                 elif lost < 0.5:
                     lim = cfg.HELIPAD_I_MAX_CMS / cfg.HELIPAD_KI
                     ix = max(-lim, min(lim, ix + ex * period))
                     iy = max(-lim, min(lim, iy + ey * period))
-                vx, vy = gain * ex + cfg.HELIPAD_KI * ix, gain * ey + cfg.HELIPAD_KI * iy
+                hold_x, hold_y = cfg.HELIPAD_KI * ix, cfg.HELIPAD_KI * iy
+                vx, vy = gain * px + hold_x, gain * py + hold_y
+                # never faster than it can still brake to a stop on the H
+                vmax = min(15 if z > 60 else 10, math.sqrt(2 * cfg.HELIPAD_BRAKE_CMS2 * err))
                 n = math.hypot(vx, vy)
-                vmax = 15 if z > 60 else 10
                 if n > vmax:
                     vx, vy = vx * vmax / n, vy * vmax / n
+                if err < cfg.HELIPAD_LAND_TOL_CM and perr < cfg.HELIPAD_LAND_TOL_CM:
+                    vx, vy = hold_x, hold_y   # above the middle and staying there: only hold
                 if not self.pose.measured and lost > 0.5:
                     # no odometry and no fresh view of the H: the position doesn't
                     # update, steering on it would fly the drone away. Hold still.
                     vx = vy = 0.0
-                # small corrections need the minimum rc value, or the Tello ignores them
-                push = err > cfg.HELIPAD_LAND_TOL_CM and (vx or vy)
-                f.send_velocity(vx, vy, vz, min_units=cfg.RC_MIN_UNITS if push and vz == 0 else 0)
+                # stuck just next to the H: the Tello ignores very small rc values
+                push = (avg_err > cfg.HELIPAD_LAND_TOL_CM and speed < cfg.HELIPAD_STILL_CMS
+                        and (vx or vy) and vz == 0)
+                f.send_velocity(vx, vy, vz, min_units=cfg.RC_MIN_UNITS if push else 0)
                 time.sleep(period)
             print(f"ℹ️  H: na {cfg.HELIPAD_TIMEOUT_S}s nog niet gecentreerd, hier landen")
             return True
@@ -616,9 +650,10 @@ class DroneApp:
             _, ref, size_cm = self._pad_ref
             size_px = size_cm / cm_per_pixel(w, height) if size_cm else None
             bar = self.pad_detector.find_center(gray, ref.bar_dir, ref.dark, size_px=size_px)
-            if bar is not None:
+            target = self._pad_target   # (the mission thread can clear it meanwhile)
+            if bar is not None and target is not None:
                 x, y, _ = pixel_to_world(bar.cx, bar.cy, w, h, height, pose)
-                tx, ty = self._pad_target
+                tx, ty = target
                 if math.hypot(x - tx, y - ty) < cfg.HELIPAD_BAR_JUMP_CM:
                     pad = bar
         if pad is not None and self.airborne:

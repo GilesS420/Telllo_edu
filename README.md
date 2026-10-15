@@ -256,15 +256,22 @@ Ziet de drone tijdens een missie (met `land_at_end`) ergens een landingsplatform
    (80 cm). Ziet hij er geen, dan stijgt hij naar `HELIPAD_SEARCH_HEIGHT_CM` (150 cm), waar de
    camera meer van de vloer ziet, en kijkt opnieuw. Nog altijd niets: gewoon landen op de
    coördinaten van het laatste punt.
-3. De drone stuurt zich boven het midden van de H en daalt alleen als hij erboven gecentreerd
-   is (`HELIPAD_CENTER_TOL_CM`, 6 cm). De H wordt in elk camerabeeld opnieuw gemeten, dus hij
-   blijft corrigeren tijdens het dalen. Het midden is het midden van de dwarsbalk (de "-").
+3. De drone stuurt zich boven het midden van de H. Hij stuurt op waar hij binnen
+   `HELIPAD_PREDICT_S` (0,6 s) zal zijn, niet op waar hij nu is: zo remt hij al af vóór de H in
+   plaats van erover te schieten en eromheen te cirkelen, en vliegt hij nooit sneller dan hij
+   op de H kan stoppen (`HELIPAD_BRAKE_CMS2`). Hij daalt al tijdens het naderen: volle snelheid
+   binnen `HELIPAD_CENTER_TOL_CM` (6 cm, boven 60 cm het dubbele en 1,5× zo snel), trager iets
+   verder. De H wordt in elk camerabeeld opnieuw gemeten, dus hij blijft corrigeren tijdens het
+   dalen. Het midden is het midden van de dwarsbalk (de "-").
 4. Onder ~45 cm past de H niet meer in het beeld. Dan volgt hij alleen nog die dwarsbalk:
    halverwege de binnenkanten van de twee staande balken (`find_center`). Zo blijft hij tot
    op ~1 cm meten tot vlak boven de H.
-5. Op `HELIPAD_FINAL_CM` (25 cm) wacht hij tot hij minstens `HELIPAD_LAND_STABLE_S` (0,5 s)
-   binnen `HELIPAD_LAND_TOL_CM` (2,5 cm) van het midden hangt, en stuurt dan meteen `land`.
-   Een kleine blijvende duw (`HELIPAD_KI`) houdt hem op zijn plek tegen wind en drift.
+5. Op `HELIPAD_FINAL_CM` (25 cm) landt hij zodra hij `HELIPAD_LAND_STABLE_S` (0,5 s) stil boven
+   het midden hangt: gemiddeld binnen `HELIPAD_LAND_TOL_CM` (3 cm) en trager dan
+   `HELIPAD_STILL_CMS` (4 cm/s). Het gemiddelde telt, want de H-meting verspringt een paar cm
+   per beeld; vroeger begon het wachten bij elk verspringend beeld opnieuw, soms 40 s lang.
+   Hangt hij binnen de 3 cm en blijft hij daar, dan laat hij de sticks los en houdt alleen een
+   kleine blijvende duw (`HELIPAD_KI`) tegen drift aan.
    Kwijt in het laatste stuk: hij stijgt een beetje tot hij de H terugziet en daalt opnieuw.
 
 In de simulator (16 vluchten, met wind en zijwaartse drift bij het landen) staat de drone bij
