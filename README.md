@@ -1,7 +1,7 @@
 # Tello EDU – autonoom pad volgen + landen op een H
 
 ```
-tello_gui.py          ← start hier: grafische besturing (pad plannen, 3D, terrein, sensoren, camera)
+tello_gui.py          ← start hier: grafische besturing (pad plannen, vluchtpad, terrein, sensoren, camera)
 tello_combined.py     ← live vliegen met het toetsenbord (ZQSD), handig om te testen/kalibreren
 drone/
     app.py            kern: missies afvliegen, landen op een H, Jetson-koppeling
@@ -14,7 +14,7 @@ drone/
     jetson_link.py    UDP/JSON-communicatie met de Jetson
     telemetry.py      alle sensorwaarden over tijd + terreinkaart (barometer − ToF)
     sim.py            simulator: alles testen zonder drone (`--sim`), met dozen op de vloer
-gui/                  onderdelen van de GUI: thema, instrumenten, 3D-weergave, kaart
+gui/                  onderdelen van de GUI: thema, instrumenten, vluchtpad, kaart
     keypress.py       toetsenbord-hulp voor tello_combined.py
 json_flights/         opgeslagen vluchten (JSON), te openen met Opslaan/Laden in de GUI
 docs/                 afbeeldingen voor deze README
@@ -99,12 +99,18 @@ van in pop-ups.
   uit, de drone valt!).
 
 **Midden: drie tabbladen** (Ctrl+1/2/3)
-* **3D-weergave**: assenkruis bij de start (x rood = vooruit, y groen = links, z blauw = hoogte),
-  oranje = gepland pad, blauw = actieve missie (ook van de Jetson), groen = bereikte punten,
-  roze = gevlogen spoor, het drone-modelletje draait mee met de richting en kantelt met
-  pitch/roll (rode rotors = voorkant), cyaan = de gevonden H en wat de camera nu ziet, gekleurde
-  tegels = gemeten terrein. Slepen = draaien, scrollen = zoomen, of kies *3D*, *Boven*,
-  *Zijkant* of *Achter*. De assen schuiven vloeiend mee in plaats van te verspringen.
+* **Vluchtpad**: bovenaanzicht van het **gevlogen pad** (roze, pijltjes = vliegrichting) met
+  de **startlocaties** (groene vierkantjes S1, S2, …), de gevonden **H-platformen** (cyaan H1,
+  H2, …) en de **plassen** (blauwe cirkels op hun gemeten grootte, P1, P2, … met hun
+  coördinaat). Rechts staat de lijst met alle coördinaten (cm). Elke start zet het
+  assenstelsel opnieuw op de drone, maar de GUI hangt de vluchten aan elkaar: de plek waar
+  de drone landde is de start van de volgende vlucht, zodat alle vluchten sinds de laatste
+  *Reset omgeving* op één pad staan, t.o.v. de startplek van de eerste vlucht (S1). Bij meer
+  vluchten heten de plassen V1-P1, V2-P1, … (vlucht, nummer dat de Jetson kreeg; de Jetson
+  krijgt de coördinaten in het assenstelsel van die vlucht). Is de drone met de hand
+  verplaatst, druk dan op *Reset omgeving*: dan begint een nieuw pad. *Wis pad* begint
+  opnieuw, *Pad opslaan* bewaart het pad als PNG plus een JSON met alle coördinaten (voor
+  een verslag). Scrollen = zoomen, *Passend* toont weer alles.
 * **Kaart & terrein**: bovenaanzicht met de terreinkaart. **Klik** om een punt toe te voegen
   (hoogte = het z-veld), **sleep** een punt om het te verplaatsen, **rechtsklik** om het te
   wissen, scroll om te zoomen. De gevonden H staat er als cyaan cirkel. Rechts de terreinanalyse,
@@ -365,7 +371,7 @@ dan het aantal beelden.
 
 De laptop draait een YOLO-model (Ultralytics) op het beeld van de onderste camera. De
 gevonden plassen krijgen een blauw kader in het camerabeeld van de GUI, met de zekerheid en
-(in de lucht) hun coördinaat. Op de kaart en in de 3D-weergave verschijnen ze als **P1, P2, …**
+(in de lucht) hun coördinaat. Op de kaart en op het vluchtpad verschijnen ze als **P1, P2, …**
 De Jetson krijgt per plas één `puddle`-bericht met de coördinaten (zie [Protocol](#protocol-json-over-udp-één-bericht-per-pakket)).
 
 1. Train het model op je Roboflow-dataset (export *YOLOv11*):

@@ -14,16 +14,22 @@ Below the map: the height profile of the ground along the flown track.
 import math
 
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.colors import LinearSegmentedColormap, Normalize
 from matplotlib.figure import Figure
 from matplotlib.patches import Circle, Polygon
 
 from drone import config as cfg
 
-from .map3d import TERRAIN_CMAP, TERRAIN_NORM
 from .theme import C, mpl_style
 
 SNAP_CM = 5
 PICK_PX = 12
+
+# terrain colours: dips blue, floor grey, obstacles brown -> orange
+TERRAIN_CMAP = LinearSegmentedColormap.from_list(
+    "terrain", [(0.0, "#2563eb"), (0.36, "#334155"), (0.44, "#3b4757"),
+                (0.6, "#a16207"), (1.0, "#fbbf24")])
+TERRAIN_NORM = Normalize(-40, 60)
 
 
 class MapView:
