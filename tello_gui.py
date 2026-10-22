@@ -697,7 +697,7 @@ class TelloGUI:
         elif puddles:
             lines.append(f"Plassen ({len(puddles)}):")
             lines += [f"  P{p.id}  x {p.x:.0f}, y {p.y:.0f} cm  ~{p.w_cm:.0f}x{p.h_cm:.0f} cm"
-                      for p in puddles[:4]]
+                      + ("  📷" if p.photo else "") for p in puddles[:4]]
             if len(puddles) > 4:
                 lines.append(f"  … en nog {len(puddles) - 4} (zie kaart)")
             lines.append("")

@@ -17,6 +17,7 @@ Test the model on saved images, a folder or a video (opens a window):
     python -m drone.puddles flight.mp4
 """
 
+import collections
 import math
 import os
 import threading
@@ -56,6 +57,9 @@ class Puddle:
         self.conf = conf
         self.hits = 1
         self.last_seen = time.time()
+        self.photo = None          # file of the photo taken straight above it
+        self.photo_offset_cm = None  # drone-puddle distance when the photo was taken
+        self.photo_tried = False
 
     @property
     def confirmed(self):
@@ -65,7 +69,8 @@ class Puddle:
         return {"id": self.id, "x": round(self.x, 1), "y": round(self.y, 1),
                 "size_cm": [round(self.w_cm), round(self.h_cm)],
                 "area_cm2": round(self.w_cm * self.h_cm * math.pi / 4),
-                "confidence": round(self.conf, 2), "hits": self.hits}
+                "confidence": round(self.conf, 2), "hits": self.hits,
+                "photo": self.photo}
 
 
 def load_model(path):
@@ -116,6 +121,7 @@ class PuddleDetector:
         self._boxes = ([], 0.0, None)   # (boxes, frame time, image shape)
         self._puddles = []
         self._next_id = 1
+        self._sightings = collections.deque(maxlen=100)   # (t_frame, x, y, conf)
         self.infer_ms = None
         self._running = True
         if self.enabled:
@@ -140,6 +146,17 @@ class PuddleDetector:
             return []
         return boxes
 
+    def sighting_near(self, x, y, since, radius=None):
+        """Newest detection (t_frame, x, y, conf) after `since` near (x, y), or None."""
+        radius = radius or cfg.PUDDLE_MERGE_CM
+        with self._lock:
+            for s in reversed(self._sightings):
+                if s[0] <= since:
+                    break
+                if math.hypot(s[1] - x, s[2] - y) <= radius:
+                    return s
+        return None
+
     def puddles(self, confirmed=True):
         with self._lock:
             return [p for p in self._puddles if p.confirmed or not confirmed]
@@ -149,6 +166,7 @@ class PuddleDetector:
         with self._lock:
             self._puddles = []
             self._next_id = 1
+            self._sightings.clear()
 
     def stop(self):
         self._running = False
@@ -200,6 +218,7 @@ class PuddleDetector:
                 x, y, _ = pixel_to_world(b.cx, b.cy, w, h, height, pose)
                 s = cm_per_pixel(w, height)
                 b.world = (x, y)
+                self._sightings.append((t_frame, x, y, b.conf))
                 p = self._merge(x, y, (b.x2 - b.x1) * s, (b.y2 - b.y1) * s, b.conf)
                 b.puddle_id = p.id
                 if p.hits == cfg.PUDDLE_MIN_HITS:

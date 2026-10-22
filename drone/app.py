@@ -56,6 +56,7 @@ class DroneApp:
         self.cam = DownCam()
         self.pad_detector = HelipadDetector()
         self.puddle_detector = PuddleDetector(on_new=self._puddle_found)
+        self._photographing = False
         self.pads = []               # H sightings this mission: (t, x, y, size), newest last
         self._pad_ref = None         # (t, Helipad, size cm) last full view of the H (for find_center)
         self._pad_target = None      # (x, y) the landing on the H aims at right now
@@ -357,8 +358,11 @@ class DroneApp:
                             "pos": {"x": round(x, 1), "y": round(y, 1), "z": round(z, 1)}})
 
         try:
+            self.follower.interrupt = self.puddle_detour
             self.follower.fly(waypoints, speed, on_waypoint,
                               mode=msg.get("nav_mode"), fine=msg.get("fine"))
+            while self.puddle_detour():   # puddles confirmed only at the last point
+                pass
         except MissionAborted:
             print("🛑 Mission aborted")
             self.link.send({"type": "mission_aborted", "id": self.mission_id,
@@ -367,6 +371,7 @@ class DroneApp:
             self.safe_land()
             return
         finally:
+            self.follower.interrupt = None
             self.waypoint_index = -1
 
         print("🏁 Mission complete")
@@ -429,6 +434,100 @@ class DroneApp:
             print("ℹ️  Geen H gezien tijdens de vlucht: landen op het eerste punt")
             self.follower.move_to((first_wp[0], first_wp[1], z), speed)
             self.safe_land(spot=first_wp[:2], helipad=False)
+
+    # ------------------------------------------------------------ puddle photos
+    def puddle_detour(self):
+        """
+        Mission thread, between moves: is there a puddle without a photo yet?
+        Then fly above it and take the photo. Returns True when the drone moved.
+        """
+        if self._photographing or not cfg.PUDDLE_PHOTO or not self.downvision_enabled:
+            return False
+        todo = [p for p in self.puddle_detector.puddles() if not p.photo_tried]
+        if not todo:
+            return False
+        self._photographing = True
+        try:
+            self.photograph_puddle(todo[0])
+        finally:
+            self._photographing = False
+        return True
+
+    def photograph_puddle(self, puddle):
+        """Centre above the puddle (fresh detections keep correcting) and take a photo."""
+        puddle.photo_tried = True
+        f = self.follower
+        f.rc(0, 0, 0, 0)
+        tx, ty = puddle.x, puddle.y
+        x, y, z, _ = self.pose.get()
+        print(f"📷 Plas {puddle.id}: erboven centreren voor een foto "
+              f"({math.hypot(tx - x, ty - y):.0f} cm verder)")
+        if not self.pose.measured:
+            # no odometry: one 'go' move to the puddle, no fine centring possible
+            f.move_to((tx, ty, z), cfg.DEFAULT_SPEED)
+            time.sleep(1.0)
+        else:
+            period = 1.0 / cfg.RC_HZ
+            deadline = time.time() + cfg.PUDDLE_PHOTO_TIMEOUT_S
+            t_seen = time.time() - cfg.FRAME_LATENCY_S
+            good_since = None
+            try:
+                while time.time() < deadline:
+                    f._check_abort()
+                    new = self.puddle_detector.sighting_near(tx, ty, t_seen)
+                    if new:   # fresh measurement of the puddle (smoothed a little)
+                        t_seen = new[0]
+                        tx, ty = 0.5 * tx + 0.5 * new[1], 0.5 * ty + 0.5 * new[2]
+                    x, y, z, _ = self.pose.get()
+                    ex, ey = tx - x, ty - y
+                    err = math.hypot(ex, ey)
+                    fresh = time.time() - t_seen < 1.0
+                    if err < cfg.PUDDLE_CENTER_TOL_CM and fresh:
+                        good_since = good_since or time.time()
+                        if time.time() - good_since >= cfg.PUDDLE_CENTER_STABLE_S:
+                            break
+                    else:
+                        good_since = None
+                    vx, vy = cfg.RC_GAIN * ex, cfg.RC_GAIN * ey
+                    n = math.hypot(vx, vy)
+                    if n > 20:
+                        vx, vy = vx * 20 / n, vy * 20 / n
+                    push = err > cfg.PUDDLE_CENTER_TOL_CM
+                    f.send_velocity(vx, vy, 0, min_units=cfg.RC_MIN_UNITS if push else 0)
+                    time.sleep(period)
+                else:
+                    print(f"ℹ️  Plas {puddle.id}: na {cfg.PUDDLE_PHOTO_TIMEOUT_S}s niet "
+                          f"gecentreerd, foto toch genomen")
+            finally:
+                f.rc(0, 0, 0, 0)
+            puddle.x, puddle.y = tx, ty   # the last measurements, from straight above
+            time.sleep(cfg.FRAME_LATENCY_S + 0.15)   # a frame taken after stopping
+        x, y, _, _ = self.pose.get()
+        self.save_puddle_photo(puddle, math.hypot(puddle.x - x, puddle.y - y))
+
+    def save_puddle_photo(self, puddle, offset_cm):
+        frame = self.frame_reader.frame
+        if frame is None:
+            print(f"⚠️  Plas {puddle.id}: geen camerabeeld voor de foto")
+            return
+        os.makedirs(cfg.PUDDLE_PHOTO_DIR, exist_ok=True)
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        base = os.path.join(cfg.PUDDLE_PHOTO_DIR, f"plas{puddle.id}_{stamp}")
+        if frame.ndim == 3 and cfg.FRAME_IS_RGB:
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        cv2.imwrite(base + ".png", frame)              # the photo itself
+        vis = self.latest_vis()
+        if vis is not None:                            # with the detection drawn
+            vis = vis.copy()
+            cv2.putText(vis, f"P{puddle.id} ({puddle.x:.0f}, {puddle.y:.0f}) cm",
+                        (6, vis.shape[0] - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                        (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.imwrite(base + "_detectie.png", vis)
+        puddle.photo = base + ".png"
+        puddle.photo_offset_cm = offset_cm
+        print(f"📷 Foto van plas {puddle.id}: {puddle.photo} ({offset_cm:.0f} cm naast het midden)")
+        self.link.send(dict(puddle.to_msg(), type="puddle_photo", mission=self.mission_id,
+                            offset_cm=round(offset_cm, 1)))
 
     def _pad_near(self, xy, since):
         """Newest H sighting after time `since` within HELIPAD_RADIUS_CM of xy, or None."""

@@ -235,6 +235,10 @@ class PathFollower:
         self.yaw_hold = cfg.YAW_HOLD
         self._last_rc = 0.0
         self.level = False   # True: never correct the height (fly level, ignore the floor)
+        # interrupt(): called between moves while flying a mission; returns True when
+        # it moved the drone elsewhere (e.g. to photograph a puddle), the leg then
+        # continues from wherever the drone is now
+        self.interrupt = None
         if cfg.MAX_STEP_CM < 40 or cfg.MAX_STEP_CM > 500:
             raise ValueError("MAX_STEP_CM must be between 40 and 500")
 
@@ -293,7 +297,8 @@ class PathFollower:
                 # a normal 'go' move (the first leg is flown with 'go')
                 if mode == "rc" and self.pose.vo_validated and not self.pose.vo_disabled:
                     try:
-                        self.rc_leg(prev, wp, speed, stop_at_end=last)
+                        while not self.rc_leg(prev, wp, speed, stop_at_end=last):
+                            prev = self.pose.get()[:3]   # back from a detour: on from here
                     except OdometryLost:
                         print("⚠️  Odometrie kwijt: verder in stap-modus")
                         self.rc(0, 0, 0, 0)
@@ -336,9 +341,13 @@ class PathFollower:
                   "Controleer YAW_SIGN in drone/config.py")
 
     # --------------------------------------------------------------- go mode
+    def _interrupted(self):
+        return bool(self.interrupt and self.interrupt())
+
     def move_to(self, target, speed):
         while True:
             self._check_abort()
+            self._interrupted()   # a detour: the next step starts from the new position
             self.correct_yaw()
             x, y, z, _ = self.pose.get()
             dx, dy = target[0] - x, target[1] - y
@@ -375,7 +384,10 @@ class PathFollower:
         self.rc(clamp(lr), clamp(fb), clamp(ud), clamp(yv))
 
     def rc_leg(self, start, target, speed, stop_at_end):
-        """Follow the straight line start -> target without stopping (pure pursuit)."""
+        """
+        Follow the straight line start -> target without stopping (pure pursuit).
+        Returns False when interrupted by a detour (fly() starts the leg again).
+        """
         ab = [t - s for s, t in zip(start, target)]
         length = math.sqrt(sum(c * c for c in ab))
         deadline = time.time() + length / speed * 3 + 6
@@ -384,6 +396,8 @@ class PathFollower:
         period = 1.0 / cfg.RC_HZ
         while True:
             self._check_abort()
+            if self._interrupted():
+                return False
             if not self.pose.measured:
                 self.rc(0, 0, 0, 0)
                 raise OdometryLost()
@@ -428,6 +442,7 @@ class PathFollower:
             time.sleep(period)
         if stop_at_end:
             self.rc(0, 0, 0, 0)
+        return True
 
     def descend_and_land(self, target_xy):
         """

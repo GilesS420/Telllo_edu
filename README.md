@@ -146,6 +146,7 @@ gewoon uitgevoerd en getekend.
 | `ack` | `ref`, … |
 | `waypoint_reached` | `id`, `index`, `pos` |
 | `puddle` | `id`, `x`, `y` (cm, mission frame), `size_cm` (`[breedte, lengte]` van de box), `area_cm2`, `confidence`, `hits`, `mission` (één keer per plas, zodra hij `PUDDLE_MIN_HITS` keer gezien is) |
+| `puddle_photo` | zoals `puddle`, plus `photo` (bestand op de laptop) en `offset_cm` (afstand tussen het midden van de plas en recht onder de drone bij de foto) |
 | `mission_done` / `mission_aborted` | `id`, `helipad` (waar de H gezien is, of `null`), `puddles` (lijst zoals bij `puddle`) |
 | `error` | `ref`, `error` |
 
@@ -396,6 +397,15 @@ Hoe het werkt (`drone/puddles.py`):
 * Op de grond tekent hij de kaders ook (handig om te testen door de drone boven een plas te
   houden), maar coördinaten komen er pas in de lucht.
 * Bij elke nieuwe start (en bij *Reset omgeving*) begint de lijst met plassen opnieuw.
+
+**Foto van recht boven (bevestiging).** Vindt de drone tijdens een missie een nieuwe plas,
+dan onderbreekt hij zijn pad: hij vliegt erboven, centreert zich op de verse detecties
+(binnen `PUDDLE_CENTER_TOL_CM`, `PUDDLE_CENTER_STABLE_S` lang) en neemt een foto met de
+onderste camera. Daarna vliegt hij verder vanaf waar hij is. In `photos/` komen per plas twee
+bestanden: `plasN_<tijd>.png` (de foto zelf) en `plasN_<tijd>_detectie.png` (met het kader en
+de coördinaat). De Jetson krijgt een `puddle_photo`-bericht en in de GUI staat 📷 achter de
+plas. Lukt centreren niet binnen `PUDDLE_PHOTO_TIMEOUT_S`, dan neemt hij de foto toch en
+staat de afstand tot het midden in `offset_cm`. Uitzetten: `PUDDLE_PHOTO = False`.
 
 Instellingen in `drone/config.py`: `PUDDLE_MODEL` (ook `.onnx` of een TensorRT-`.engine`),
 `PUDDLE_CONF`, `PUDDLE_IMGSZ` (dezelfde waarde als bij het trainen), `PUDDLE_DEVICE`.

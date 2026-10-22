@@ -185,3 +185,11 @@ PUDDLE_DEVICE = None        # None = automatic (GPU if there is one), or "cpu", 
 PUDDLE_MERGE_CM = 40        # detections closer than this belong to the same puddle
 PUDDLE_MIN_HITS = 3         # a puddle counts (and goes to the Jetson) after this many detections
 PUDDLE_EDGE_PX = 4          # ignore boxes touching the image edge for the position (half in view)
+# Photo of every puddle found during a mission: the drone interrupts its path,
+# centres itself above the puddle (steering on fresh detections), takes a photo
+# straight down as confirmation, and then continues the path.
+PUDDLE_PHOTO = True
+PUDDLE_PHOTO_DIR = "photos"
+PUDDLE_CENTER_TOL_CM = 6    # puddle middle at most this far from straight below the drone ...
+PUDDLE_CENTER_STABLE_S = 0.5  # ... for this long before the photo
+PUDDLE_PHOTO_TIMEOUT_S = 15  # not centred after this: take the photo anyway (offset is logged)
