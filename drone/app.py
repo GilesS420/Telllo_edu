@@ -60,6 +60,8 @@ class DroneApp:
         self._pad_ref = None         # (t, Helipad, size cm) last full view of the H (for find_center)
         self._pad_target = None      # (x, y) the landing on the H aims at right now
         self.frame_id = 0            # +1 on every new mission frame (the GUI clears its trail)
+        self.frame_link = None       # pose before the last takeoff reset, in the old frame
+        self.ground_sample = None    # (t, frame_id, grey, ToF cm, pose): for the GUI's ground map
         self._pose_set = False       # set_pose was used: keep that frame at the next takeoff
         self._frame = None
         self._vis = None
@@ -201,12 +203,17 @@ class DroneApp:
             self._pose_set = True
             self.link.send({"type": "ack", "ref": t})
 
-    def reset_frame(self):
+    def reset_frame(self, carry=False):
         """
         New mission frame from where the drone stands now: origin here, x = where
         the nose (front camera) points, y = left. Everything measured in the old
         frame (H sightings, terrain map, GUI trail) no longer fits, so it goes too.
+
+        carry: the drone was not moved by hand since it landed (takeoff), so the
+        old pose says where the new frame lies in the old one. The GUI's path view
+        uses frame_link to chain the flights; None (Reset) starts a new path.
         """
+        self.frame_link = self.pose.get() if carry else None
         self.pose.reset()
         self.pads = []
         self.puddle_detector.reset()
@@ -236,7 +243,7 @@ class DroneApp:
         if battery < cfg.MIN_BATTERY:
             raise RuntimeError(f"battery too low ({battery}% < {cfg.MIN_BATTERY}%)")
         if cfg.RESET_FRAME_ON_TAKEOFF and not self._pose_set:
-            self.reset_frame()   # coordinates of this flight start at the drone itself
+            self.reset_frame(carry=True)   # coordinates of this flight start at the drone itself
         self.state = "taking_off"
         print("🚁 Opstijgen...")
         x0, y0, _, _ = self.pose.get()
@@ -401,6 +408,21 @@ class DroneApp:
         xs = sorted(p[1] for p in best)
         ys = sorted(p[2] for p in best)
         return xs[len(xs) // 2], ys[len(ys) // 2]
+
+    def seen_helipads(self):
+        """Every place an H was seen at least HELIPAD_MIN_SIGHTINGS times: [(x, y), ...]."""
+        pads = list(self.pads)
+        places = []
+        while pads:
+            best = max(([p for p in pads if math.hypot(p[1] - q[1], p[2] - q[2]) < 30]
+                        for q in pads), key=len)
+            if len(best) < cfg.HELIPAD_MIN_SIGHTINGS:
+                break
+            xs = sorted(p[1] for p in best)
+            ys = sorted(p[2] for p in best)
+            places.append((xs[len(xs) // 2], ys[len(ys) // 2]))
+            pads = [p for p in pads if p not in best]
+        return places
 
     def _helipad_msg(self):
         pad = self.seen_helipad()
@@ -622,9 +644,10 @@ class DroneApp:
         pad = (self.pad_detector.find(gray, height)
                if cfg.HELIPAD_LAND and self.downvision_enabled else None)
         h, w = gray.shape
+        target = self._pad_target    # once: the landing thread can clear it meanwhile
         if pad is not None:
             self._pad_ref = (t_frame, pad, pad.size_px * cm_per_pixel(w, height) if height else None)
-        elif (self._pad_target is not None and self._pad_ref is not None and height
+        elif (target is not None and self._pad_ref is not None and height
                 and height < 70 and t_frame - self._pad_ref[0] < 10):
             # landing, close above the H: it no longer fits in the image, so follow
             # the middle of its cross bar ("-") instead
@@ -633,7 +656,7 @@ class DroneApp:
             bar = self.pad_detector.find_center(gray, ref.bar_dir, ref.dark, size_px=size_px)
             if bar is not None:
                 x, y, _ = pixel_to_world(bar.cx, bar.cy, w, h, height, pose)
-                tx, ty = self._pad_target
+                tx, ty = target
                 if math.hypot(x - tx, y - ty) < cfg.HELIPAD_BAR_JUMP_CM:
                     pad = bar
         if pad is not None and self.airborne:
@@ -645,6 +668,8 @@ class DroneApp:
                 size = pad.size_px / w if pad.size_px else 1.0   # cross bar only: H > image
                 self.pads.append((t_frame, x, y, size))
                 del self.pads[:-200]
+        if self.airborne and self.downvision_enabled and height:
+            self.ground_sample = (t_frame, self.frame_id, gray, height, pose)
         # puddle model (own thread, also on the ground so you can test it by hand;
         # coordinates only in the air), only on the downward camera
         if self.downvision_enabled:
