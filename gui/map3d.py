@@ -108,6 +108,7 @@ class Map3D:
         self.rotors = [line("-", color=C["danger"], linewidth=1.5) for _ in range(4)]
         self.nose = line("-", color=C["danger"], linewidth=3)
         self.pad = line("s", color=C["cyan"], markersize=11, alpha=0.75, linestyle="none")
+        self.puddles = line("o", color=C["water"], markersize=10, alpha=0.75, linestyle="none")
         self.footprint = line("-", color=C["cyan"], linewidth=0.8, alpha=0.5)
 
     # ------------------------------------------------------------- view
@@ -226,6 +227,8 @@ class Map3D:
         pad = s.get("helipad")
         pad_pts = [(pad[0], pad[1], 0)] if pad is not None else []
         self._set(self.pad, pad_pts)
+        puddle_pts = [(p[0], p[1], 0) for p in s.get("puddles", [])]
+        self._set(self.puddles, puddle_pts)
         fp = s.get("footprint")
         self._set(self.footprint, [(px, py, ground) for px, py in fp] if fp else [])
         self._terrain(s["terrain"], s["terrain_version"])
@@ -240,6 +243,8 @@ class Map3D:
                 labels.append((p, f" M{i + 1}", C["accent"]))
         for p in pad_pts:
             labels.append((p, " H", C["cyan"]))
+        for p, (_, _, pid, _) in zip(puddle_pts, s.get("puddles", [])):
+            labels.append((p, f" P{pid}", C["water"]))
         key = tuple((tuple(round(v) for v in pt), t) for pt, t, _ in labels)
         if key != self._label_key:
             self._label_key = key
@@ -249,7 +254,7 @@ class Map3D:
                             for pt, text, c in labels]
 
         self._limits(wps + mission + s["trail"][-400:] + [(x, y, z)]
-                     + pad_pts)
+                     + pad_pts + puddle_pts)
         self.canvas.draw_idle()
 
 
@@ -259,6 +264,7 @@ def legend(parent):
     for color, text in ((C["draft"], "gepland pad"), (C["accent"], "actieve missie"),
                         (C["ok"], "bereikt"), (C["trail"], "gevlogen"),
                         (C["danger"], "drone (neus)"), (C["cyan"], "H (landingsplaats)"),
+                        (C["water"], "plas"),
                         ("#a16207", "terrein hoger"), ("#2563eb", "terrein lager")):
         tk.Label(row, text="●", fg=color, bg=C["panel"]).pack(side=tk.LEFT)
         tk.Label(row, text=text, fg=C["muted"], bg=C["panel"],
