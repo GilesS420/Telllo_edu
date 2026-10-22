@@ -5,3 +5,7 @@ venv/
 .venv/
 dataset/
 yolo-env
+runs
+models
+weights
+yolo11n.pt
