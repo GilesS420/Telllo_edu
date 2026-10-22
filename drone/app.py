@@ -61,6 +61,7 @@ class DroneApp:
         self._pad_target = None      # (x, y) the landing on the H aims at right now
         self.frame_id = 0            # +1 on every new mission frame (the GUI clears its trail)
         self.frame_link = None       # pose before the last takeoff reset, in the old frame
+        self.ground_sample = None    # (t, frame_id, grey, ToF cm, pose): for the GUI's ground map
         self._pose_set = False       # set_pose was used: keep that frame at the next takeoff
         self._frame = None
         self._vis = None
@@ -667,6 +668,8 @@ class DroneApp:
                 size = pad.size_px / w if pad.size_px else 1.0   # cross bar only: H > image
                 self.pads.append((t_frame, x, y, size))
                 del self.pads[:-200]
+        if self.airborne and self.downvision_enabled and height:
+            self.ground_sample = (t_frame, self.frame_id, gray, height, pose)
         # puddle model (own thread, also on the ground so you can test it by hand;
         # coordinates only in the air), only on the downward camera
         if self.downvision_enabled:

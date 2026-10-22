@@ -7,8 +7,8 @@ Graphical mission control for the Tello EDU.
 Layout
     top bar      state, battery, flight time, Jetson link, odometry, messages
     left         plan the path: waypoints, raster pattern, mission settings, fly
-    middle       tabs: flown path (S, H, puddles) | map & terrain (click to plan) |
-                 sensor graphs
+    middle       tabs: ground map (camera mosaic, puddles, H's, path) | 3D view |
+                 map & terrain (click to plan) | sensor graphs
     right        camera, instruments (horizon, compass, height), sensor values,
                  landing pad (H) and coordinate frame
 
@@ -17,7 +17,7 @@ open (they are drawn too). Everything runs offline (tkinter + matplotlib), so
 it also works on the Tello Wi-Fi. Missions are saved/loaded in json_flights/.
 
 Keys: Enter add point, Del remove point, Ctrl+Z undo, Ctrl+S save, Ctrl+O load,
-Ctrl+1/2/3 switch tab, L land, X emergency stop (motors off).
+Ctrl+1/2/3/4 switch tab, L land, X emergency stop (motors off).
 """
 
 import argparse
@@ -40,14 +40,20 @@ from drone import config as cfg  # noqa: E402
 from drone.app import DroneApp  # noqa: E402
 from drone.navigator import validate_waypoints  # noqa: E402
 from gui import theme  # noqa: E402
+from gui import map3d  # noqa: E402
+from gui.groundmap import GroundMap  # noqa: E402
+from gui.map3d import VIEWS, Map3D  # noqa: E402
 from gui.mapview import MapView  # noqa: E402
 from gui.pathview import FlightLog, PathView, legend  # noqa: E402
+from gui.pathview import to_world as flight_to_world  # noqa: E402
 from gui.theme import C, F, tk_button  # noqa: E402
 from gui.widgets import (AttitudeIndicator, BatteryBar, Compass, HeightGauge,  # noqa: E402
                          LineChart, Segmented, StatTile, Toast, card)
 
 TICK_MS = 33                    # instruments, camera, top bar (~30 fps)
 PLOT_PATH_S = 0.15              # matplotlib views are slower: redraw less often
+PLOT_3D_S = 0.10
+GROUND_S = 0.25                 # lay a camera frame on the ground map this often
 PLOT_MAP_S = 0.15
 CHART_S = 0.25
 
@@ -97,10 +103,13 @@ class TelloGUI:
         self.trail_frame = None      # app.frame_id the trail belongs to
         self.mission_count = 0
         self.flight_log = FlightLog()  # flown path, starts, H's, puddles since the last Reset
+        self.ground = GroundMap()      # downward camera frames laid on the floor
+        self._ground_t = None
+        self._ground_epoch = 0
         self.show = None             # displayed pose, glides towards the real pose
         self.takeoff_time = None
         self._dragging = False
-        self._next = {"path": 0, "map": 0, "chart": 0, "side": 0}
+        self._next = {"path": 0, "3d": 0, "map": 0, "chart": 0, "side": 0, "ground": 0}
         self._tick_n = 0
         self._camera_photo = None
         self._cam_pending = None     # camera switch asked, not done yet
@@ -286,16 +295,16 @@ class TelloGUI:
         self.tabs = ttk.Notebook(center)
         self.tabs.pack(fill=tk.BOTH, expand=True)
 
-        # --- flown path with starts, H's and puddles
+        # --- the ground (camera mosaic) with puddles, H's, starts and the path
         tab = ttk.Frame(self.tabs)
-        self.tabs.add(tab, text="  Vluchtpad  ")
+        self.tabs.add(tab, text="  Grondkaart  ")
         bar = ttk.Frame(tab, padding=(8, 6))
         bar.pack(fill=tk.X)
         ttk.Button(bar, text="Passend", style="Small.TButton",
                    command=lambda: self.pathview.fit()).pack(side=tk.LEFT)
-        ttk.Button(bar, text="Wis pad", style="Small.TButton",
+        ttk.Button(bar, text="Wis kaart", style="Small.TButton",
                    command=self.clear_trail).pack(side=tk.LEFT, padx=(6, 2))
-        ttk.Button(bar, text="Pad opslaan (PNG + JSON)", style="Small.TButton",
+        ttk.Button(bar, text="Opslaan (PNG + JSON)", style="Small.TButton",
                    command=self.export_path).pack(side=tk.LEFT, padx=2)
         legend(tab).pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(0, 4))
         split = ttk.Frame(tab)
@@ -308,6 +317,22 @@ class TelloGUI:
         self.path_info.pack(fill=tk.BOTH, expand=True)
         self.pathview = PathView(split)
         self.pathview.widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # --- 3D overview of the drone
+        tab = ttk.Frame(self.tabs)
+        self.tabs.add(tab, text="  3D-weergave  ")
+        bar = ttk.Frame(tab, padding=(8, 6))
+        bar.pack(fill=tk.X)
+        self.view_seg = Segmented(bar, list(VIEWS), self._set_view, "3D", style="TFrame")
+        self.view_seg.pack(side=tk.LEFT)
+        ttk.Button(bar, text="Zoom passend", style="Small.TButton",
+                   command=lambda: self.map3d.reset_zoom()).pack(side=tk.LEFT, padx=(10, 2))
+        self.terrain3d = tk.BooleanVar(value=True)
+        ttk.Checkbutton(bar, text="Terrein", variable=self.terrain3d, style="TCheckbutton",
+                        command=self._terrain3d_changed).pack(side=tk.LEFT, padx=8)
+        self.map3d = Map3D(tab)
+        self.map3d.widget.pack(fill=tk.BOTH, expand=True)
+        map3d.legend(tab).pack(fill=tk.X, padx=8, pady=(0, 4))
 
         # --- map & terrain
         tab = ttk.Frame(self.tabs)
@@ -443,7 +468,7 @@ class TelloGUI:
         r.bind("<Control-z>", lambda e: self.undo())
         r.bind("<Control-s>", lambda e: self.save_mission())
         r.bind("<Control-o>", lambda e: self.load_mission())
-        for i in range(3):
+        for i in range(4):
             r.bind(f"<Control-Key-{i + 1}>", lambda e, i=i: self.tabs.select(i))
         r.bind("<KeyPress-l>", lambda e: self._key(self.land, e))
         r.bind("<KeyPress-h>", lambda e: self._key(self.helipad_land, e))
@@ -513,13 +538,19 @@ class TelloGUI:
             self.update_pad_info()
 
         tab = self.tabs.index(self.tabs.select())
+        if now >= self._next["ground"]:
+            self._next["ground"] = now + GROUND_S
+            self._update_ground()
         if tab == 0 and now >= self._next["path"]:
             self._next["path"] = now + PLOT_PATH_S
             self._update_path()
-        elif tab == 1 and now >= self._next["map"]:
+        elif tab == 1 and now >= self._next["3d"]:
+            self._next["3d"] = now + PLOT_3D_S
+            self.map3d.update(self._scene(tel))
+        elif tab == 2 and now >= self._next["map"]:
             self._next["map"] = now + PLOT_MAP_S
             self._update_map(tel)
-        elif tab == 2 and now >= self._next["chart"]:
+        elif tab == 3 and now >= self._next["chart"]:
             self._next["chart"] = now + CHART_S
             self._update_charts()
 
@@ -621,13 +652,30 @@ class TelloGUI:
             pts.append((x + f * c - l * s, y + f * s + l * c))
         return pts + [pts[0]]
 
+    def _update_ground(self):
+        # Leg het nieuwste camerabeeld van onder op de grondkaart.
+        if self.flight_log.epoch != self._ground_epoch:     # Reset / Wis kaart
+            self._ground_epoch = self.flight_log.epoch
+            self.ground.clear()
+        sample = self.app.ground_sample
+        if sample is None or sample[0] == self._ground_t or not self.flight_log.flights:
+            return
+        t, frame_id, gray, height, pose = sample
+        flight = self.flight_log.flights[-1]
+        if frame_id != flight.frame_id:
+            return
+        self._ground_t = t
+        x, y = flight_to_world(flight.T, pose[0], pose[1])
+        self.ground.add(gray, height, (x, y, pose[2], pose[3] + flight.T[2]))
+
     def _update_path(self):
-        # Teken het gevlogen pad met startlocaties, H's en plassen, en de lijst ernaast.
+        # Teken de grondkaart met startlocaties, H's, plassen en het pad, en de lijst ernaast.
         s = self.flight_log.scene()
         pose = None
         if self.app.airborne:
             x, y = self.flight_log.to_world(self.show[0], self.show[1])
             pose = (x, y, self.show[3] + self.flight_log.flights[-1].T[2])
+        self.pathview.set_ground(self.ground)
         self.pathview.update(s, pose)
         self.path_info.configure(text=self._path_text(s))
 
@@ -643,8 +691,15 @@ class TelloGUI:
         lines += ["", f"H-platformen ({len(s['pads'])}):"]
         lines += [f"  {p['label']}  x {p['x']:.0f}, y {p['y']:.0f}" for p in s["pads"]]
         lines += ["", f"Plassen ({len(s['puddles'])}):"]
-        lines += [f"  {p['label']}  x {p['x']:.0f}, y {p['y']:.0f}  ~{p['w_cm']:.0f}x{p['h_cm']:.0f}"
-                  for p in s["puddles"]]
+        for p in s["puddles"]:
+            lines.append(f"  {p['label']}  x {p['x']:.0f}, y {p['y']:.0f}  ~{p['w_cm']:.0f}x{p['h_cm']:.0f}")
+            if p["along_cm"] is not None:
+                side = p["side_cm"]
+                lines.append(f"     ↳ {p['along_cm'] / 100:.2f} m op het pad, "
+                             + ("midden" if abs(side) < 5 else
+                                f"{abs(side):.0f} cm {'links' if side > 0 else 'rechts'}"))
+        if s["route"]:
+            lines += ["", f"Virtueel pad: {s['route_cm'] / 100:.1f} m (geplande route vanaf S1)."]
         lines += ["", "cm, t.o.v. het assenkruis = startplek van de eerste vlucht (x = vooruit, y = links). Reset omgeving = nieuw pad."]
         if s["flights"] > 1:
             lines.append("De Jetson krijgt plassen in het assenstelsel van hun eigen vlucht.")
@@ -663,8 +718,8 @@ class TelloGUI:
             # (x, y, id, radius cm) of every puddle the model found
             "puddles": [(p.x, p.y, p.id, (p.w_cm + p.h_cm) / 4)
                         for p in self.app.puddle_detector.puddles()],
-            "terrain": terrain.snapshot() if terrain else [],
-            "terrain_version": terrain.version if terrain else 0,
+            "terrain": terrain.snapshot() if terrain and self.terrain3d.get() else [],
+            "terrain_version": (terrain.version if terrain else 0, self.terrain3d.get()),
             "ground_under": terrain.elevation_at(x, y) if terrain else None,
             "footprint": self._footprint(tel),
         }
@@ -859,7 +914,7 @@ class TelloGUI:
             self.tree.selection_set(str(self.sel))
             self.tree.see(str(self.sel))
         self._path_stats()
-        self._next["path"] = self._next["map"] = 0      # redraw now
+        self._next["path"] = self._next["3d"] = self._next["map"] = 0      # redraw now
 
     def _path_stats(self):
         # Bereken totale padlengte en een ruwe vluchttijdschatting.
@@ -882,7 +937,7 @@ class TelloGUI:
         for k, v in zip("xyz", self.waypoints[self.sel]):
             self.entries[k].set(f"{v:.0f}")
         self._validate_entries()
-        self._next["path"] = self._next["map"] = 0
+        self._next["path"] = self._next["3d"] = self._next["map"] = 0
 
     def add_waypoint(self):
         # Voeg het huidige invoerpunt toe aan de waypointlijst.
@@ -1107,15 +1162,19 @@ class TelloGUI:
             return
         self._update_path()
         self.pathview.save_png(path)
+        self.ground.save_png(os.path.splitext(path)[0] + "_grond.png")
         r = lambda p: {k: round(v, 1) if isinstance(v, float) else v for k, v in p.items()}
         with open(os.path.splitext(path)[0] + ".json", "w") as f:
             json.dump({"frame": "S1: x = vooruit, y = links, cm", "flights": s["flights"],
                        "length_cm": round(s["length_cm"]),
                        "starts": [r(p) for p in s["starts"]], "helipads": [r(p) for p in s["pads"]],
-                       "puddles": [r(p) for p in s["puddles"]],
+                       "puddles": [r({k: v for k, v in p.items() if k != "on_route"})
+                                   for p in s["puddles"]],
+                       "route": [[round(x), round(y)] for x, y in s["route"]],
+                       "route_cm": round(s["route_cm"]),
                        "paths": [[[round(x), round(y)] for x, y in p] for p in s["paths"]]},
                       f, indent=1)
-        self.toast.show(f"Pad opgeslagen: {os.path.basename(path)} (+ .json)", "ok")
+        self.toast.show(f"Opgeslagen: {os.path.basename(path)} (+ _grond.png, .json)", "ok")
 
     def rereference(self):
         # Stel de huidige grondhoogte opnieuw in als nulpunt.
@@ -1131,8 +1190,17 @@ class TelloGUI:
         self._summary = None
         self.toast.show("Terreinkaart gewist.", "info")
 
+    def _terrain3d_changed(self):
+        # Toon of verberg terrein in de 3D-weergave.
+        self.map3d.show_terrain = self.terrain3d.get()
+        self._next["3d"] = 0
+
+    def _set_view(self, name):
+        # Schakel de camerastand van de 3D-view.
+        self.map3d.set_view(name)
+
     def clear_trail(self):
-        # Wis het gevlogen pad (en eerdere vluchten) uit de weergave.
+        # Wis de grondkaart, het gevlogen pad en eerdere vluchten uit de weergave.
         self.trail = []
         self.flight_log.clear()
         self._next["path"] = 0
