@@ -141,7 +141,7 @@ class HelipadTracker:
         self.velocity = (0.0, 0.0)
         self.last_raw = None
 
-    def update(self, candidates, timestamp, shape):
+    def update(self, candidates, timestamp, shape, height_cm=None):
         if shape != self.shape or timestamp - self.last_seen > cfg.HELIPAD_TRACK_HOLD_S:
             self.reset()
             self.shape = shape
@@ -151,8 +151,14 @@ class HelipadTracker:
             dt = min(timestamp - self.last_seen, cfg.HELIPAD_TRACK_HOLD_S)
             predicted = (self.pad.cx + self.velocity[0] * dt,
                          self.pad.cy + self.velocity[1] * dt)
-            gate = max(12, shape[1] * 0.04, self.pad.size_px * 0.45)
+            base_gate = max(12, shape[1] * 0.04, self.pad.size_px * 0.45)
+            gate = base_gate
             gate += min(12, math.hypot(*self.velocity) * dt * 0.5)
+            if height_cm is not None and math.isfinite(height_cm) and height_cm > 10:
+                # At low height, a normal 15 cm/s correction can shift a small
+                # H beyond the size-only gate between delayed camera frames.
+                motion_px = 15.0 * dt / cm_per_pixel(shape[1], height_cm)
+                gate = max(gate, min(max(48, shape[1] * 0.15), base_gate + motion_px))
             matching = [pad for pad in candidates
                         if math.hypot(pad.cx - predicted[0], pad.cy - predicted[1]) < gate
                         and 0.6 < pad.size_px / self.pad.size_px < 1.7]

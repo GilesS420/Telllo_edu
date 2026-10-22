@@ -86,6 +86,26 @@ class VisualTrackingTests(unittest.TestCase):
         self.assertGreater(np.linalg.norm(self.vo.pose.get()[:2]), 1)
         self.assertFalse(self.vo._reacquire)
 
+    def test_large_partial_scene_match_recovers_only_after_two_frames(self):
+        self.vo.pose.measured = True
+        self.vo.begin_flip()
+        self.vo.end_flip()
+        self.vo._resume_at = 10
+        self.vo.tello.get_distance_tof.return_value = 94
+        # Model a crossing of the surface measured by ToF: the scene's scale
+        # stays unchanged even though the sensor's range changes after a flip.
+        shifted = cv2.warpAffine(self.image, np.float32([[1, 0, 126], [0, 1, 25]]), (320, 240))
+        self.vo.frame_reader.frame = shifted
+        self.vo._step(11, 0.1)
+        self.assertFalse(self.vo.pose.measured)
+        self.assertEqual(self.vo.recovery_status()["method"], "matched_overlap_translation")
+        self.vo.frame_reader.frame = shifted.copy()
+        self.vo._step(11.1, 0.1)
+        self.assertTrue(self.vo.pose.measured)
+        self.assertTrue(self.vo.pose.position_valid)
+        expected = self.vo._position(self.ref, (126, 25), 320, 80)
+        np.testing.assert_allclose(self.vo.pose.get()[:2], expected, atol=1)
+
     def test_no_matching_floor_keeps_global_position_unknown(self):
         self.vo.pose.measured = True
         self.vo.begin_flip()
@@ -96,6 +116,116 @@ class VisualTrackingTests(unittest.TestCase):
         self.assertFalse(self.vo.pose.position_valid)
         self.assertFalse(self.vo.pose.measured)
         self.assertEqual(self.vo.pose.get()[:2], (0, 0))
+
+    def test_reference_returning_after_motor_deadline_still_restores_position(self):
+        self.vo.pose.measured = True
+        self.vo.begin_flip()
+        self.vo.end_flip()
+        self.vo._resume_at = 10
+        self.vo.finish_flip_recovery()
+        self.vo.frame_reader.frame = cv2.warpAffine(
+            self.image, np.float32([[1, 0, 0], [0, 1, 12]]), (320, 240))
+        self.vo._step(16, 0.05)
+        self.assertTrue(self.vo._reacquire)
+        self.assertFalse(self.vo.pose.measured)
+        self.assertFalse(self.vo.pose.position_valid)
+        self.assertFalse(self.vo.pose.local_reference_valid)
+        # Slow background matching still requires two distinct, consistent
+        # images. Decoded frames between attempts must not restore tracking.
+        self.vo.frame_reader.frame = self.vo.frame_reader.frame.copy()
+        self.vo._step(16.05, 0.05)
+        self.assertEqual(self.vo.recovery_status()["attempts"], 1)
+        self.assertFalse(self.vo.pose.measured)
+        self.vo.frame_reader.frame = self.vo.frame_reader.frame.copy()
+        self.vo._step(16.25, 0.05)
+        self.assertTrue(self.vo.pose.measured)
+        self.assertTrue(self.vo.pose.position_valid)
+        self.assertTrue(self.vo.pose.local_reference_valid)
+        self.assertFalse(self.vo._reacquire)
+        self.assertFalse(self.vo._anchor_tracking)
+        self.assertGreater(np.linalg.norm(self.vo.pose.get()[:2]), 1)
+        self.vo.tello.send_rc_control.assert_not_called()
+        self.vo.tello.send_command_with_return.assert_not_called()
+
+    def test_anchor_dropout_rechecks_saved_reference_when_video_returns(self):
+        self.vo.pose.measured = True
+        self.vo.begin_flip()
+        self.vo.end_flip()
+        self.vo._resume_at = 10
+        for stamp in (11, 11.05):
+            self.vo.frame_reader.frame = self.image.copy()
+            self.vo._step(stamp, 0.05)
+        self.assertTrue(self.vo._anchor_tracking)
+        # The frame object does not change while the video link is frozen.
+        self.vo._step(12, 0.05)
+        self.assertFalse(self.vo.pose.measured)
+        self.assertFalse(self.vo.pose.position_valid)
+        self.assertFalse(self.vo.pose.local_reference_valid)
+        self.assertTrue(self.vo._reacquire)
+        self.assertFalse(self.vo._anchor_tracking)
+        self.vo.frame_reader.frame = self.image.copy()
+        self.vo._step(12.05, 0.05)
+        self.assertFalse(self.vo.pose.measured)
+        self.vo.frame_reader.frame = self.image.copy()
+        self.vo._step(12.10, 0.05)
+        self.assertTrue(self.vo.pose.measured)
+        self.assertTrue(self.vo.pose.position_valid)
+        self.assertTrue(self.vo._anchor_tracking)
+
+    def test_finishing_return_with_missing_image_keeps_anchor_search_alive(self):
+        self.vo.pose.measured = True
+        self.vo.begin_flip()
+        self.vo.end_flip()
+        self.vo._resume_at = 10
+        for stamp in (11, 11.05):
+            self.vo.frame_reader.frame = self.image.copy()
+            self.vo._step(stamp, 0.05)
+        self.vo.frame_reader.frame = np.zeros_like(self.image)
+        self.vo._step(11.1, 0.05)
+        self.vo.finish_flip_recovery()
+        self.assertTrue(self.vo._reacquire)
+        self.assertFalse(self.vo.pose.position_valid)
+        for stamp in (11.15, 11.20):
+            self.vo.frame_reader.frame = self.image.copy()
+            self.vo._step(stamp, 0.05)
+        self.assertTrue(self.vo.pose.measured)
+        self.assertTrue(self.vo.pose.position_valid)
+        self.assertFalse(self.vo._anchor_tracking)
+
+    def test_downward_camera_interruption_cannot_silently_keep_global_origin(self):
+        self.vo.pose.measured = True
+        self.vo.downcam_on = lambda: False
+        self.vo.frame_reader.frame = self.image.copy()
+        self.vo._step(10.1, 0.05)
+        self.assertFalse(self.vo.pose.position_valid)
+        self.assertFalse(self.vo.pose.local_reference_valid)
+        self.assertFalse(self.vo._good_frames)
+        self.vo.downcam_on = lambda: True
+        with patch("drone.odometry.time.time", return_value=10.15):
+            self.assertIsNone(self.vo.capture_flip_reference()["reference"])
+        for stamp in (10.2, 10.25):
+            self.vo.frame_reader.frame = cv2.warpAffine(
+                self.image, np.float32([[1, 0, 0], [0, 1, 40]]), (320, 240))
+            self.vo._step(stamp, 0.05)
+        self.assertTrue(self.vo.pose.measured)  # fresh local tracking is possible
+        self.assertFalse(self.vo.pose.position_valid)
+        self.assertFalse(self.vo.pose.local_reference_valid)
+
+    def test_new_flight_frame_cannot_reuse_an_old_flip_reference(self):
+        self.vo.pose.measured = True
+        self.vo.begin_flip()
+        self.vo.end_flip()
+        self.vo._sensors = collections.deque(maxlen=80)
+        self.vo.pose.reset()
+        self.vo.reset_tracking()
+        self.assertIsNone(self.vo._flip_ref)
+        self.assertIsNone(self.vo._flip_capture)
+        self.assertIsNone(self.vo._recovery_candidate)
+        self.assertFalse(self.vo._reacquire)
+        self.assertFalse(self.vo._anchor_tracking)
+        self.assertFalse(self.vo._return_active)
+        with patch("drone.odometry.time.time", return_value=10.1):
+            self.assertIsNone(self.vo.capture_flip_reference()["reference"])
 
     def test_local_click_reference_works_after_the_flight_origin_was_lost(self):
         self.vo.pose.set(10, -2, 80)
@@ -129,6 +259,30 @@ class VisualTrackingTests(unittest.TestCase):
         self.vo.pose.measured = True
         with patch("drone.odometry.time.time", return_value=11):
             self.assertIsNone(self.vo.capture_flip_reference()["reference"])
+
+    def test_settled_image_extends_reference_without_replacing_click_target(self):
+        self.vo.pose.measured = True
+        with patch("drone.odometry.time.time", return_value=10.1):
+            original = self.vo.capture_flip_reference()["reference"]
+        self.vo.pose.set(8, 0, 80)
+        self.vo._world = (8, 0)
+        fresh = dict(self.ref, img=self.image.copy(), world=(8, 0))
+        self.vo._good_frames.append((11, fresh, 0.8))
+        with patch("drone.odometry.time.time", return_value=11.1):
+            extended = self.vo.refresh_flip_reference(original)
+        self.assertEqual(extended["pose"], original["pose"])
+        self.assertEqual(extended["world"], original["world"])
+        self.assertEqual(extended["frame"]["world"], (0, 0))
+        self.assertEqual(extended["frames"][-1]["world"], (8, 0))
+        self.assertEqual(extended["before_sdk_frame"]["world"], (8, 0))
+
+    def test_reference_refresh_does_not_bridge_unknown_coordinates(self):
+        self.vo.pose.measured = True
+        with patch("drone.odometry.time.time", return_value=10.1):
+            original = self.vo.capture_flip_reference()["reference"]
+        self.vo.pose.position_valid = False
+        with patch("drone.odometry.time.time", return_value=10.2):
+            self.assertIs(self.vo.refresh_flip_reference(original), original)
 
     def test_click_image_stays_the_reference_during_the_entire_return(self):
         self.vo.pose.measured = True

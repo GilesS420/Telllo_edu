@@ -1,8 +1,27 @@
-"""Describe what a position sample actually establishes for the display."""
+"""Describe flight readiness and what position samples establish for the display."""
 
 import math
 
 from drone import config as cfg
+
+
+def flip_readiness(state, airborne, motion_phase=None, battery=None, flip_busy=False):
+    """Return button availability, its caption, and a rejection or warning message."""
+    if state == "taking_off" or motion_phase == "takeoff_sdk":
+        return False, "🔁  Salto · wacht op opstijgen", "Wacht tot de drone klaar is met opstijgen."
+    if state == "landing":
+        return False, "🔁  Salto · landen", "Geen salto tijdens het landen."
+    if not airborne:
+        return False, "🔁  Salto · eerst opstijgen", "Drone moet in de lucht zijn om een salto te doen."
+    if flip_busy:
+        return False, "🔁  Salto · bezig", "Er is al een salto bezig of ingepland."
+    if battery is not None and battery < cfg.FLIP_MIN_BATTERY:
+        return (False, f"🔁  Salto · batterij <{cfg.FLIP_MIN_BATTERY}%",
+                f"Batterij te laag voor salto ({battery:.0f}% < {cfg.FLIP_MIN_BATTERY}%).")
+    if battery is not None and battery < 50:
+        return (True, f"🔁  Salto · {battery:.0f}% (<50%)",
+                "Batterij <50%: de drone kan de salto weigeren.")
+    return True, "🔁  Salto", ""
 
 
 class TrajectoryHistory:

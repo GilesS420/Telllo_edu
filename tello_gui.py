@@ -39,7 +39,7 @@ from drone import config as cfg  # noqa: E402
 from drone.app import DroneApp  # noqa: E402
 from drone.navigator import validate_waypoints  # noqa: E402
 from gui import theme  # noqa: E402
-from gui.tracking import TrajectoryHistory, display_tracking  # noqa: E402
+from gui.tracking import TrajectoryHistory, display_tracking, flip_readiness  # noqa: E402
 from gui.map3d import VIEWS, Map3D, legend  # noqa: E402
 from gui.mapview import MapView  # noqa: E402
 from gui.theme import C, F, tk_button  # noqa: E402
@@ -184,7 +184,9 @@ class TelloGUI:
         # Salto button: request a flip via the mission thread
         def _salto():
             self._flip()
-        tk_button(box, "🔁  Salto", _salto, "#8a5a2f").pack(fill=tk.X, padx=2, pady=(6, 0))
+        self.flip_button = tk_button(box, "🔁  Salto", _salto, "#8a5a2f")
+        self.flip_button.pack(fill=tk.X, padx=2, pady=(6, 0))
+        self._refresh_flip_button()
         grid.columnconfigure(0, weight=1, uniform="b")
         grid.columnconfigure(1, weight=1, uniform="b")
         tk_button(box, "⚠  NOODSTOP – motoren uit  (X)", self.emergency, "#c62f37",
@@ -553,6 +555,8 @@ class TelloGUI:
             except Exception:
                 battery = None
         self.battery.set(battery)
+        self._flip_battery = battery
+        self._refresh_flip_button()
         v = self.top_vars
         if app.airborne and self.takeoff_time:
             s = int(now - self.takeoff_time)
@@ -772,17 +776,44 @@ class TelloGUI:
         self.record_btn.configure(text="■ Stop opnemen" if self.app.recording
                                   else "● Opnemen (dataset)")
 
+    def _flip_availability(self):
+        app = self.app
+        telemetry = getattr(app, "telemetry", None)
+        battery = getattr(telemetry, "latest", {}).get("battery")
+        if battery is None:
+            battery = getattr(self, "_flip_battery", None)
+        pending = getattr(getattr(app, "commands", None), "flip_pending", None)
+        busy = (getattr(app, "_active_command", None) == "flip"
+                or (pending is not None and pending.is_set()))
+        return flip_readiness(app.state, app.airborne,
+                              getattr(app, "_motion_phase", None), battery, busy)
+
+    def _refresh_flip_button(self):
+        enabled, caption, warning = self._flip_availability()
+        self.flip_button.configure(state=tk.NORMAL if enabled else tk.DISABLED, text=caption,
+                                   fg=C["warn"] if warning else "white",
+                                   disabledforeground=C["muted"])
+
     def _flip(self, direction="f"):
         """Request a flip (salto). direction in 'f', 'b', 'l', 'r'."""
-        if not getattr(self.app, "airborne", False):
-            self.toast.show("Drone moet in de lucht zijn om een salto te doen.", "warn", 3)
+        enabled, _, warning = self._flip_availability()
+        if not enabled:
+            self._refresh_flip_button()
+            self.toast.show(warning, "warn", 3)
             return
         dir_map = {"f": "f", "b": "b", "l": "l", "r": "r"}
         d = dir_map.get(direction, "f")
         # submit atomically captures coordinates + tracking validity here,
         # before the mission worker has a chance to start the manoeuvre.
-        self.app.submit({"type": "flip", "dir": d})
-        self.toast.show("Salto aangevraagd", "info", 2)
+        accepted = self.app.submit({"type": "flip", "dir": d})
+        self._refresh_flip_button()
+        if accepted is False:
+            self.toast.show("Salto niet ingepland. Wacht tot de drone gereed is.", "warn", 3)
+            return
+        text = "Salto aangevraagd"
+        if warning:
+            text += " · " + warning
+        self.toast.show(text, "warn" if warning else "info", 3 if warning else 2)
 
     # ============================================================= waypoints
     def _speed_changed(self, v):

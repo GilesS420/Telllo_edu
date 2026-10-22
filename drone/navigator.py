@@ -236,6 +236,7 @@ class Pose:
             return {"pose": (self.x, self.y, self.z, self.yaw),
                     "tracking_valid": self.measured and self.position_valid,
                     "measured": self.measured, "position_valid": self.position_valid,
+                    "local_reference_valid": self.local_reference_valid,
                     "measurement_time": self.measurement_time,
                     "quality": self.quality}
 
@@ -302,8 +303,24 @@ class PathFollower:
 
     def rc(self, lr, fb, ud, yv):
         """send_rc_control that remembers when the sticks were last used."""
-        self._last_rc = time.time()
+        if any((lr, fb, ud, yv)):
+            self._last_rc = time.time()
         self.tello.send_rc_control(lr, fb, ud, yv)
+
+    def settle_before_flip(self):
+        """Wait only for the remaining RC transition; never retry a flip."""
+        if self._last_rc <= 0:
+            return 0.0
+        remaining = cfg.RC_SETTLE_S - (time.time() - self._last_rc)
+        if remaining <= 0:
+            return 0.0
+        started = time.time()
+        self.rc(0, 0, 0, 0)
+        while remaining > 0:
+            self._check_abort()
+            time.sleep(min(0.02, remaining))
+            remaining = cfg.RC_SETTLE_S - (time.time() - self._last_rc)
+        return max(0.0, time.time() - started)
 
     def command(self, fn, *args):
         """
@@ -524,7 +541,8 @@ class PathFollower:
 
     def hold_position(self, target, max_speed=20.0, gain=None,
                       tolerance_cm=None, timeout_s=None, settle_s=0.0,
-                      allow_local_reference=False, damping=0.0, max_vertical_speed=None):
+                      allow_local_reference=False, damping=0.0, max_vertical_speed=None,
+                      max_error_growth_cm=15):
         """Precise positioning on a waypoint with small rc corrections."""
         def reference_valid():
             return self.pose.position_valid or (allow_local_reference and self.pose.local_reference_valid)
@@ -541,6 +559,9 @@ class PathFollower:
         deadline = t0 + timeout_s
         tolerance = cfg.FINE_TOL_CM if tolerance_cm is None else tolerance_cm
         z_tolerance = 1.5 * tolerance if tolerance_cm is None else tolerance
+        # A noisy derivative must not reject a position that stays inside the
+        # band for the full settling period. Still reject fast crossings.
+        settle_speed = max(3.0, min(6.0, tolerance / max(settle_s, 0.5)))
         stable_since = None
         period = 1.0 / cfg.RC_HZ
         gain = cfg.RC_GAIN if gain is None else gain
@@ -576,15 +597,15 @@ class PathFollower:
                 e0 = e if e0 is None else e0
                 # safety: the error must shrink. If not, the camera direction is
                 # wrong (not yet checked this flight): stop instead of wandering off.
-                if e > e0 + 15 or (time.time() - t0 > 2.5 and e > 0.9 * e0 + 5):
+                if e > e0 + max_error_growth_cm or (time.time() - t0 > 2.5 and e > 0.9 * e0 + 5):
                     print("⚠️  Nauwkeurig positioneren komt niet dichter: gestopt")
                     return finish(False, "error_not_decreasing_check_camera_calibration")
                 # Explicit precision also corrects small altitude errors; the
                 # normal mission deadband must not erase a flip's height error.
                 dz = target[2] - z
                 ex, ey, ez = target[0] - x, target[1] - y, (dz if tolerance_cm is not None else self._dz(dz))
-                xy_slow = not damping or math.hypot(velocity[0], velocity[1]) < 3
-                z_slow = not damping or abs(velocity[2]) < 3
+                xy_slow = not damping or math.hypot(velocity[0], velocity[1]) < settle_speed
+                z_slow = not damping or abs(velocity[2]) < settle_speed
                 if math.hypot(ex, ey) < tolerance and abs(ez) < z_tolerance and xy_slow and z_slow:
                     stable_since = time.time() if stable_since is None else stable_since
                     if time.time() - stable_since >= settle_s:

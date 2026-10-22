@@ -76,6 +76,52 @@ class TrackerTests(unittest.TestCase):
         found = self.tracker.update([pad(250, score=0.01), pad(102)], 10.3, self.shape)
         self.assertLess(abs(found.cx - 102), 2)
 
+    def test_low_height_motion_across_a_delayed_frame_keeps_the_target(self):
+        for height, shift in ((60, 16), (40, 25)):
+            with self.subTest(height=height, shift=shift):
+                tracker = HelipadTracker()
+                for i in range(cfg.HELIPAD_MIN_SIGHTINGS):
+                    tracker.update([pad(size=32)], 10 + i * 0.1, self.shape,
+                                   height_cm=height)
+                timestamp = tracker.last_seen + 0.2
+                found = tracker.update([pad(250, score=0.01, size=32),
+                                        pad(100 + shift, size=32)],
+                                       timestamp, self.shape, height_cm=height)
+                self.assertIsNotNone(found)
+                self.assertEqual(tracker.last_seen, timestamp)
+                self.assertEqual(tracker.last_raw, (100 + shift, 100))
+                self.assertTrue(tracker.confirmed)
+
+    def test_height_gate_does_not_allow_the_same_pixel_jump_high_above_the_pad(self):
+        for i in range(cfg.HELIPAD_MIN_SIGHTINGS):
+            self.tracker.update([pad(size=32)], 10 + i * 0.1, self.shape,
+                                height_cm=200)
+        last_seen = self.tracker.last_seen
+        self.tracker.update([pad(125, size=32)], last_seen + 0.2, self.shape,
+                            height_cm=200)
+        self.assertEqual(self.tracker.last_seen, last_seen)
+
+    def test_low_height_motion_allowance_is_bounded(self):
+        for i in range(cfg.HELIPAD_MIN_SIGHTINGS):
+            self.tracker.update([pad(size=32)], 10 + i * 0.1, self.shape,
+                                height_cm=11)
+        last_seen = self.tracker.last_seen
+        self.tracker.update([pad(170, size=32)], last_seen + 0.3, self.shape,
+                            height_cm=11)
+        self.assertEqual(self.tracker.last_seen, last_seen)
+
+    def test_invalid_height_does_not_expand_the_motion_gate(self):
+        for height in (None, 0, float("nan"), float("inf")):
+            with self.subTest(height=height):
+                tracker = HelipadTracker()
+                for i in range(cfg.HELIPAD_MIN_SIGHTINGS):
+                    tracker.update([pad(size=32)], 10 + i * 0.1, self.shape,
+                                   height_cm=height)
+                last_seen = tracker.last_seen
+                tracker.update([pad(125, size=32)], last_seen + 0.2, self.shape,
+                               height_cm=height)
+                self.assertEqual(tracker.last_seen, last_seen)
+
     def test_brief_miss_keeps_overlay_without_refreshing_measurement(self):
         self.confirm()
         last_seen = self.tracker.last_seen

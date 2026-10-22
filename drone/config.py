@@ -32,7 +32,7 @@ MAX_STEP_CM = 100           # long segments are split in steps of max this lengt
                             # (smaller = more corrections + faster abort)
 MIN_MOVE_CM = 20            # Tello cannot 'go' when |x|,|y|,|z| are all < 20
 MIN_BATTERY = 5             # refuse a mission below this battery %
-FLIP_MIN_BATTERY = 50       # Tello flips are unreliable/blocked below this battery %
+FLIP_MIN_BATTERY = 20       # application threshold; Ryze specifies >=50% for intelligent modes
 FLIP_RETURN_RC_SPEED = 25   # cap approach speed to avoid repeated overshoot with SDK/video delay
 FLIP_RETURN_GAIN = 1.2
 FLIP_RETURN_DAMPING = 0.4  # moderate velocity feedback avoids delayed opposite corrections
@@ -88,10 +88,11 @@ HELIPAD_SEARCH_S = 2.0      # hover this long at the end point looking for the H
 HELIPAD_SEARCH_HEIGHT_CM = 150  # not found: climb to this height (sees more floor) and look again
 HELIPAD_CLIMB_CMS = 30      # climb speed for that
 HELIPAD_CENTER_TOL_CM = 6   # only descend while the H is this close below the drone centre
-HELIPAD_FINAL_CM = 40       # centred at this height -> normal 'land' for the last bit
-HELIPAD_FINAL_SIZE = 0.5    # ... or as soon as the H is this part of the image width
+HELIPAD_FINAL_CM = 50       # stop descent here to settle before the H is clipped by the camera
+HELIPAD_FINAL_TOL_CM = 3    # tighter centering before the final SDK landing
+HELIPAD_FINAL_SPEED_CMS = 4 # do not hand off to SDK land during a fast pass over the pad
 HELIPAD_DESCENT_CMS = 20    # descent speed above the H
-HELIPAD_TIMEOUT_S = 25      # give up (normal landing) after this time
+HELIPAD_TIMEOUT_S = 25      # stop centering and hover if the H cannot be reached in time
 HELIPAD_MIN_AREA_PX = 60    # smallest H blob (pixels) that counts (about 10 x 10 px)
 HELIPAD_SIZE_RANGE_CM = (8, 60)  # an H is between these sizes (only checked with a height)
 HELIPAD_ADAPTIVE = True     # also threshold against the local brightness (H seen from higher up)
@@ -131,7 +132,7 @@ GEOFENCE = {
 # ---------------------------------------------------------------------------
 FRAME_IS_RGB = True         # djitellopy >= 2.4 delivers RGB frames
 DOWNCAM_CROP = None         # (x, y, w, h) of the useful image area, or None
-AUTO_CROP = True            # auto-detect black borders around the bottom image
+AUTO_CROP = False           # keep optical centre fixed; dark scene regions are not video padding
 CAM_HFOV_DEG = 60.0         # horizontal field of view of the bottom camera
 CAM_FORWARD_SIGN = 1        # 1: top of image = drone forward, -1: flipped
 CAM_LEFT_SIGN = 1           # 1: left of image = drone left,   -1: flipped

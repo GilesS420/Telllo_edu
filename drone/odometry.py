@@ -23,6 +23,7 @@ import numpy as np
 
 from . import config as cfg
 from .downcam import cam_to_body, cm_per_pixel
+from .registration import recover_translation
 
 
 def wrap_deg(a):
@@ -51,6 +52,8 @@ class Odometry:
         self._recovery_image = None
         self._recovery_candidate = None
         self._anchor_tracking = False
+        self._return_active = False
+        self._last_recovery_attempt = 0.0
         self._last_feature_attempt = 0.0
         threading.Thread(target=self._loop, daemon=True).start()
 
@@ -76,6 +79,21 @@ class Odometry:
                              "age_s": now - recent[-1][0], "quality": recent[-1][2]}
             return {"snapshot": snapshot, "reference": reference}
 
+    def refresh_flip_reference(self, reference):
+        """Add the settled view without changing the click's coordinate anchor."""
+        with self._control_lock:
+            if not reference or "frames" not in reference:
+                return reference
+            captured = self.capture_flip_reference()
+            fresh = captured["reference"]
+            if fresh is None or not captured["snapshot"]["measured"]:
+                return reference
+            # No frame may bridge a loss of continuity during the queue wait.
+            if not (reference["global_valid"] and fresh["global_valid"]):
+                return reference
+            return dict(reference, frames=reference["frames"][-2:] + fresh["frames"][-6:],
+                        before_sdk_frame=fresh["frame"])
+
     def begin_flip(self, reference=None):
         with self._control_lock:
             self._flip_capture = reference
@@ -83,6 +101,8 @@ class Odometry:
             self._flip_valid = reference["global_valid"] if reference is not None else self.pose.position_valid
             self._flip_active = True
             self._anchor_tracking = False
+            self._return_active = True
+            self._last_recovery_attempt = 0.0
             self._recovery_candidate = None
             self._recovery_image = None
             self._recovery_diag = {"state": "waiting_sdk", "attempts": 0,
@@ -101,7 +121,22 @@ class Odometry:
 
     def finish_flip_recovery(self):
         with self._control_lock:
-            self._anchor_tracking = False
+            # The motor return has a deadline; the saved visual anchor does not.
+            # A later match may restore coordinates without restarting flight.
+            self._return_active = False
+            if self._anchor_tracking and not (self.pose.measured and self.pose.local_reference_valid):
+                self._resume_anchor_search()
+            else:
+                self._anchor_tracking = False
+
+    def _resume_anchor_search(self):
+        self.pose.measured = False
+        self.pose.position_valid = False
+        self.pose.local_reference_valid = False
+        self._anchor_tracking = False
+        self._reacquire = True
+        self._recovery_candidate = None
+        self._key = self._prev = None
 
     def relocalize_from_pad(self, dx, dy):
         with self._control_lock:
@@ -119,6 +154,9 @@ class Odometry:
             self._good_frames.clear()
             self._flip_active = self._reacquire = False
             self._anchor_tracking = False
+            self._return_active = False
+            self._last_recovery_attempt = 0.0
+            self._recovery_candidate = None
             self._flip_ref = None
             self._flip_capture = None
             self.pose.local_reference_valid = False
@@ -240,6 +278,7 @@ class Odometry:
         angle = math.degrees(math.atan2(jacobian[1, 0], jacobian[0, 0]))
         if not 0.5 < determinant < 2 or abs(angle) > 15:
             return None, dict(info, reason="plane_disagrees_with_imu_or_height")
+        info.update(residual_rotation_deg=float(angle), residual_scale=float(math.sqrt(determinant)))
         aligned = cv2.warpPerspective(g, inverse, (w, h))
         valid = cv2.warpPerspective(np.ones((h, w), np.uint8), inverse, (w, h)) > 0
         valid[:8] = valid[-8:] = False
@@ -273,6 +312,18 @@ class Odometry:
                 new = self._position(ref, shift, g.shape[1], ref["height"])
                 self._recovery_diag = dict(info, state="matched_translation")
                 return new, quality
+        # A flip can move the scene beyond the small-step VO window. Validate
+        # the genuinely shared pixels, without a symmetric crop that erases
+        # all overlap when one axis has shifted by more than a third-frame.
+        for ref in possible:
+            shift, quality, overlap = recover_translation(
+                ref["img"], g, height / ref["height"], wrap_deg(yaw - ref["yaw"]))
+            if shift is not None:
+                new = self._position(ref, shift, g.shape[1], ref["height"])
+                if math.dist(new, ref["world"]) > 100:
+                    continue
+                self._recovery_diag = dict(info, **overlap, state="matched_overlap_translation")
+                return new, quality
         # All saved pre-click frames share this current image; extract once.
         current_features = self._features(g) if possible else None
         for ref in possible:
@@ -294,6 +345,8 @@ class Odometry:
         with self._control_lock:
             info = dict(self._recovery_diag)
             for name, gray in (("reference", self._flip_ref["img"] if self._flip_ref else None),
+                               ("before_sdk", self._flip_capture["before_sdk_frame"]["img"]
+                                if self._flip_capture and "before_sdk_frame" in self._flip_capture else None),
                                ("after", self._recovery_image)):
                 if gray is not None:
                     filename = f"last_flip_{name}.png"
@@ -355,6 +408,10 @@ class Odometry:
             self._step_locked(t0, dt)
 
     def _step_locked(self, t0, dt):
+        if getattr(self, "_anchor_tracking", False) and t0 - self._last_good > cfg.VO_LOST_S:
+            # A frozen stream, unavailable sensors or a tilted camera must also
+            # break continuity, even when there is no new image to reject.
+            self._resume_anchor_search()
         level = self.level()
         if self._flip_active or t0 < self._resume_at or not level:
             if self._reacquire:
@@ -403,6 +460,15 @@ class Odometry:
                     self._recovery_image = g.copy()
                     matched = False
                     anchored = getattr(self, "_anchor_tracking", False)
+                    if (self._reacquire and t0 - self._resume_at > cfg.FLIP_TRACK_TIMEOUT_S
+                            and t0 - self._last_recovery_attempt < 0.25):
+                        # Continue relocalizing after the flight command ends,
+                        # at 4 Hz so two fresh matches can still confirm within
+                        # 0.35 s. Never seed a new origin from an unknown image.
+                        self._prev_frame = frame
+                        self.pose.step(dt, t0, height=height, measured=False)
+                        return
+                    self._last_recovery_attempt = t0
                     new, quality = self._recover_position(g, height, yaw)
                     if new is not None:
                         candidate = self._recovery_candidate
@@ -433,16 +499,10 @@ class Odometry:
                             matched = True
                     if matched:
                         self._reacquire = False
-                        self._anchor_tracking = True
-                    elif anchored and t0 - self._last_good > cfg.VO_LOST_S:
-                        self.pose.position_valid = False
-                        self.pose.local_reference_valid = False
-                        self._anchor_tracking = False
-                        self._key = self._prev = None
-                    elif not anchored and t0 - self._resume_at > cfg.FLIP_TRACK_TIMEOUT_S:
-                        # Local tracking may restart, but the old origin is lost.
-                        self._key = self._prev = None
-                        self._reacquire = False
+                        self._anchor_tracking = self._return_active
+                        if not self._return_active:
+                            print("📍 Positie opnieuw herkend via opgeslagen camerabeeld; "
+                                  "geen automatische terugkeermanoeuvre gestart")
                     self._prev_frame = frame
                     if not matched:
                         self.pose.step(dt, t0, height=height, measured=False)
@@ -506,6 +566,11 @@ class Odometry:
                 key = None
                 if not self.downcam_on():
                     prev = prev_frame = None   # front camera: these frames don't compare
+                    self.pose.position_valid = False
+                    self.pose.local_reference_valid = False
+                    self._good_frames.clear()
+                    if getattr(self, "_anchor_tracking", False):
+                        self._resume_anchor_search()
         else:
             # on the ground: forget the previous frame too, otherwise the first frame
             # of the next flight is compared with the landing of this one (false jump)

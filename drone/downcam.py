@@ -58,7 +58,14 @@ class DownCam:
         x, y = int(cols[0]), int(rows[0])
         w, h = int(cols[-1] - x + 1), int(rows[-1] - y + 1)
         H, W = shape
-        if w * h < 0.9 * W * H:
+        right, bottom = W - x - w, H - y - h
+        # A dark object is not encoded video padding. Only remove balanced
+        # bands on opposite edges; an asymmetric crop shifts the optical centre.
+        balanced = abs(x - right) <= 2 and abs(y - bottom) <= 2
+        strips = [band for band in (mx[:, :x], mx[:, W-right:] if right else mx[:, :0],
+                                    mx[:y, :], mx[H-bottom:, :] if bottom else mx[:0, :]) if band.size]
+        uniform = all(float(band.std()) <= 1.0 for band in strips)
+        if balanced and uniform and w * h < 0.9 * W * H:
             print(f"🔍 Auto crop of downward image: x={x} y={y} w={w} h={h}")
             self.crop = (x, y, w, h)
         else:

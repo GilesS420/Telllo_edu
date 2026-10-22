@@ -65,7 +65,8 @@ class FlipReturnTests(unittest.TestCase):
         self.app.tello.move_up.assert_not_called()
         self.sleep.assert_not_called()
         self.wait.assert_not_called()
-        self.assertEqual([call[0] for call in calls_before_flip], ["_check_abort"])
+        self.assertEqual([call[0] for call in calls_before_flip],
+                         ["_check_abort", "settle_before_flip", "_check_abort"])
         self.assert_target((10, 20, 80))
 
     def test_altitude_only_change_still_returns(self):
@@ -160,6 +161,7 @@ class PriorityFlipTests(unittest.TestCase):
 
     def test_land_submission_removes_pending_flips(self):
         app = DroneApp.__new__(DroneApp)
+        app.airborne = True
         app.commands = FlightCommandQueue()
         app.abort = threading.Event()
         app._gen = 0

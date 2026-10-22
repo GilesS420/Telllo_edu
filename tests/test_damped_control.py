@@ -8,12 +8,46 @@ from drone.navigator import MotionEstimate, PathFollower, Pose
 
 
 class DampedControlTests(unittest.TestCase):
+    def test_takeoff_correction_stops_early_if_the_camera_direction_is_wrong(self):
+        pose = Pose(10, 0, 80)
+        pose.measured = True
+        follower = PathFollower(Mock(), pose, threading.Event())
+        clock = [0.0]
+
+        def wrong_direction(vx, vy, vz, **kwargs):
+            x, y, z, _ = pose.get()
+            pose.set(x - vx / cfg.RC_HZ, y - vy / cfg.RC_HZ, z)
+
+        follower.send_velocity = Mock(side_effect=wrong_direction)
+        with patch("drone.navigator.time.time", side_effect=lambda: clock[0]), \
+                patch("drone.navigator.time.sleep", side_effect=lambda dt: clock.__setitem__(0, clock[0] + dt)):
+            arrived = follower.hold_position((0, 0, 80), max_speed=12, gain=0.8, damping=0.4,
+                                             tolerance_cm=3, timeout_s=3, max_vertical_speed=0,
+                                             max_error_growth_cm=4)
+        self.assertFalse(arrived)
+        self.assertLess(pose.get()[0], 16)
+        self.assertEqual(follower.last_hold_result["reason"], "error_not_decreasing_check_camera_calibration")
+
     def test_repeated_video_sample_does_not_erase_estimated_velocity(self):
         estimate = MotionEstimate()
         estimate.observe((0, 0, 0), 0)
         velocity = estimate.observe((5, 0, 0), 0.1)
         self.assertGreater(velocity[0], 0)
         self.assertEqual(estimate.observe((5, 0, 0), 0.1), velocity)
+
+    def test_fast_crossing_of_target_is_not_reported_as_a_settled_return(self):
+        pose = Pose(0, 0, 80)
+        pose.measured = True
+        follower = PathFollower(Mock(), pose, threading.Event())
+        follower.send_velocity = Mock()
+        clock = [0.0]
+        with patch("drone.navigator.time.time", side_effect=lambda: clock[0]), \
+                patch("drone.navigator.time.sleep", side_effect=lambda dt: clock.__setitem__(0, clock[0] + dt)), \
+                patch.object(MotionEstimate, "observe", return_value=(20, 0, 0)):
+            confirmed = follower.hold_position((0, 0, 80), tolerance_cm=3,
+                                               damping=0.4, timeout_s=0.5, settle_s=0.4)
+        self.assertFalse(confirmed)
+        self.assertLess(follower.send_velocity.call_args.args[0], 0)  # brake residual motion
 
     def test_xy_correction_does_not_disturb_height_already_within_tolerance(self):
         pose = Pose(20, 0, 82)

@@ -26,6 +26,8 @@ class FlipCaptureTests(unittest.TestCase):
         self.app.tello.get_battery.return_value = 90
         self.app.tello.send_command_with_return.return_value = "ok"
         self.app.odometry = Mock()
+        self.app.odometry.capture_flip_reference.side_effect = lambda: {
+            "snapshot": self.app.pose.snapshot(), "reference": {"test_reference": True}}
         self.app.link = Mock()
 
     def test_each_click_keeps_its_own_target_while_queue_waits(self):
@@ -44,7 +46,7 @@ class FlipCaptureTests(unittest.TestCase):
 
         def capture():
             pending_at_capture.append(self.app.commands.flip_pending.is_set())
-            return {"snapshot": self.app.pose.snapshot(), "reference": None}
+            return {"snapshot": self.app.pose.snapshot(), "reference": {"test_reference": True}}
 
         self.app.odometry.capture_flip_reference.side_effect = capture
         self.app._motion_phase = "takeoff_recenter"
@@ -57,12 +59,48 @@ class FlipCaptureTests(unittest.TestCase):
         self.assertFalse(self.app.commands.flip_pending.is_set())
         self.assertTrue(self.app.commands.empty())
 
+    def test_sdk_refusal_does_not_move_back_to_the_old_click_position(self):
+        self.app._save_flip_record = Mock()
+        self.app.tello.send_command_with_return.return_value = "error battery low"
+        self.app.submit({"type": "flip"})
+        self.app.handle_command(self.app.commands.get())
+        record = self.app.last_flip_record
+        self.assertEqual(record["status"], "flip_failed")
+        self.assertFalse(record["sdk_accepted"])
+        self.assertEqual(record["return_status"], "not_requested_sdk_refused")
+        self.assertIn("battery low", record["sdk_error"])
+        self.app.follower.hold_position.assert_not_called()
+        self.app.follower.move_to.assert_not_called()
+        self.app.follower.rc.assert_called_once_with(0, 0, 0, 0)
+        self.app.tello.send_command_with_return.assert_called_once()
+
+    def test_flip_click_during_takeoff_is_rejected_without_storing_a_moving_target(self):
+        self.app.state = "taking_off"
+        self.app._motion_phase = "takeoff_sdk"
+        self.app.submit({"type": "flip"})
+        self.assertTrue(self.app.commands.empty())
+        self.assertFalse(self.app.commands.flip_pending.is_set())
+        self.app.odometry.capture_flip_reference.assert_not_called()
+        self.app.tello.send_command_with_return.assert_not_called()
+        self.assertEqual(self.app.link.send.call_args.args[0]["ref"], "flip")
+
+    def test_plain_sdk_error_also_skips_return_movement(self):
+        self.app._save_flip_record = Mock()
+        self.app.tello.send_command_with_return.return_value = "error"
+        self.app.submit({"type": "flip"})
+        cmd = self.app.commands.get()
+        self.app.pose.set(25, 10, 82)
+        self.app.handle_command(cmd)
+        self.app.follower.hold_position.assert_not_called()
+        self.assertEqual(self.app.last_flip_record["status"], "flip_failed")
+        self.assertEqual(self.app.last_flip_record["sdk_response"], "error")
+
     def test_dispatch_clock_includes_camera_capture_delay(self):
         clock = [10.0]
 
         def capture():
             clock[0] += 0.3
-            return {"snapshot": self.app.pose.snapshot(), "reference": None}
+            return {"snapshot": self.app.pose.snapshot(), "reference": {"test_reference": True}}
 
         self.app.odometry.capture_flip_reference.side_effect = capture
         with patch("drone.app.time.monotonic", side_effect=lambda: clock[0]):
@@ -96,6 +134,7 @@ class FlipCaptureTests(unittest.TestCase):
     def test_recent_local_click_reference_allows_return_with_invalid_global_origin(self):
         self.app.pose.position_valid = False
         reference = {"test_reference": True}
+        self.app.odometry.capture_flip_reference.side_effect = None
         self.app.odometry.capture_flip_reference.return_value = {
             "snapshot": self.app.pose.snapshot(), "reference": reference}
         self.app.odometry.end_flip.side_effect = lambda: setattr(self.app.pose, "local_reference_valid", True)
@@ -117,11 +156,15 @@ class FlipCaptureTests(unittest.TestCase):
     def test_missing_local_and_global_reference_reports_saved_but_unusable_position(self):
         self.app.pose.position_valid = False
         self.app._save_flip_record = Mock()
-        self.app.submit({"type": "flip"})
-        self.app.handle_command(self.app.commands.get())
+        self.app.odometry.capture_flip_reference.side_effect = lambda: {
+            "snapshot": self.app.pose.snapshot(), "reference": None}
+        self.assertFalse(self.app.submit({"type": "flip"}))
+        self.assertTrue(self.app.commands.empty())
+        self.assertFalse(self.app.commands.flip_pending.is_set())
+        self.app.tello.send_command_with_return.assert_not_called()
         self.app.follower.hold_position.assert_not_called()
         self.assertEqual(self.app.last_flip_record["target_cm"], (12, -7, 85))
-        self.assertIn("opgeslagen", self.app.last_flip_record["error"])
+        self.assertEqual(self.app.last_flip_record["status"], "rejected_before_sdk")
 
 
 class PrecisionControlTests(unittest.TestCase):
