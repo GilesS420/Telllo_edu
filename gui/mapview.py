@@ -53,6 +53,8 @@ class MapView:
         self._label_key = None
         self._pad_patch = None
         self._pad_key = None
+        self._puddle_patches = []
+        self._puddle_key = None
         self._init_map()
 
     # ---------------------------------------------------------------- setup
@@ -259,9 +261,24 @@ class MapView:
                                          edgecolor=C["cyan"], linewidth=1.5, zorder=4)
                 self.ax.add_patch(self._pad_patch)
 
+        # puddles found by the model: circle of their measured size
+        puddles = s.get("puddles", [])
+        qkey = tuple((round(p[0]), round(p[1]), round(p[3])) for p in puddles)
+        if qkey != self._puddle_key:
+            self._puddle_key = qkey
+            for patch in self._puddle_patches:
+                patch.remove()
+            self._puddle_patches = [
+                Circle((p[1], p[0]), max(p[3], 8), facecolor=C["water"], alpha=0.35,
+                       edgecolor=C["water"], linewidth=1.5, zorder=4) for p in puddles]
+            for patch in self._puddle_patches:
+                self.ax.add_patch(patch)
+
         labels = [((p[1], p[0]), f" {i + 1}", C["draft"]) for i, p in enumerate(wps)]
         if pad is not None:
             labels.append(((pad[1], pad[0]), " H", C["cyan"]))
+        for p in puddles:
+            labels.append(((p[1], p[0]), f" P{p[2]}", C["water"]))
         for o in s.get("obstacles", []):
             labels.append(((o["y"], o["x"]), f"{o['height']:+.0f} cm", C["warn"]))
         key = tuple((tuple(round(v) for v in pt), t) for pt, t, _ in labels)
@@ -277,6 +294,7 @@ class MapView:
         pts = [(p[1], p[0]) for p in wps + mission + s["trail"][-600:]] + [(y, x), (0, 0)]
         if pad is not None:
             pts.append((pad[1], pad[0]))
+        pts += [(p[1], p[0]) for p in puddles]
         pts += [(c[1], c[0]) for c in s["terrain"]]
         xs, ys = [p[0] for p in pts], [p[1] for p in pts]
         span = max(max(xs) - min(xs), max(ys) - min(ys), 250) + 80

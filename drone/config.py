@@ -171,3 +171,17 @@ TERRAIN_PROFILE_MAX = 6000  # samples kept for the height profile along the trac
 RECORD_DIR = "dataset"      # default folder when recording is toggled on
 RECORD_HZ = 2               # images per second (don't make near-identical images)
 RECORD_ONLY_AIRBORNE = False  # True: only save while flying
+
+# ---------------------------------------------------------------------------
+# Puddle detection with a trained model (YOLO from Ultralytics, e.g. trained on
+# the Roboflow dataset). Needs `pip install ultralytics`; without a model file
+# everything else works as before.
+# ---------------------------------------------------------------------------
+PUDDLE_MODEL = "models/puddles.pt"  # best.pt from training (.pt, .onnx or TensorRT .engine)
+PUDDLE_CONF = 0.4           # minimum confidence of a detection
+PUDDLE_IMGSZ = 320          # image size used for training (imgsz=...)
+PUDDLE_HZ = 5               # model runs per second at most (runs in its own thread)
+PUDDLE_DEVICE = None        # None = automatic (GPU if there is one), or "cpu", 0, ...
+PUDDLE_MERGE_CM = 40        # detections closer than this belong to the same puddle
+PUDDLE_MIN_HITS = 3         # a puddle counts (and goes to the Jetson) after this many detections
+PUDDLE_EDGE_PX = 4          # ignore boxes touching the image edge for the position (half in view)

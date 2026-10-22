@@ -4,3 +4,7 @@ capture_*.jpg
 venv/
 .venv/
 dataset/
+runs/
+yolo-env/
+*.pt
+!models/*.pt

@@ -623,6 +623,9 @@ class TelloGUI:
             "mission": list(self.app.current_waypoints), "reached": self.app.waypoints_reached,
             "trail": self.trail, "airborne": self.app.airborne,
             "helipad": self.app.seen_helipad(),
+            # (x, y, id, radius cm) of every puddle the model found
+            "puddles": [(p.x, p.y, p.id, (p.w_cm + p.h_cm) / 4)
+                        for p in self.app.puddle_detector.puddles()],
             "terrain": terrain.snapshot() if terrain and self.terrain3d.get() else [],
             "terrain_version": (terrain.version if terrain else 0, self.terrain3d.get()),
             "ground_under": terrain.elevation_at(x, y) if terrain else None,
@@ -686,10 +689,23 @@ class TelloGUI:
         pad = self.app.seen_helipad()
         lines = [f"H gezien op  x {pad[0]:.0f}, y {pad[1]:.0f} cm" if pad else
                  "Nog geen H gezien (deze vlucht).",
-                 "",
-                 "Assen: (0, 0) = startplek van de drone, x = richting van de neus "
-                 "(voorcamera), y = links."
-                 + (" Wordt bij elke start opnieuw gezet." if cfg.RESET_FRAME_ON_TAKEOFF else "")]
+                 ""]
+        det = self.app.puddle_detector
+        puddles = det.puddles()
+        if not det.enabled:
+            lines += [f"Plasdetectie {det.status}", ""]
+        elif puddles:
+            lines.append(f"Plassen ({len(puddles)}):")
+            lines += [f"  P{p.id}  x {p.x:.0f}, y {p.y:.0f} cm  ~{p.w_cm:.0f}x{p.h_cm:.0f} cm"
+                      for p in puddles[:4]]
+            if len(puddles) > 4:
+                lines.append(f"  … en nog {len(puddles) - 4} (zie kaart)")
+            lines.append("")
+        else:
+            lines += [f"Nog geen plassen gevonden (model {det.status}).", ""]
+        lines += ["Assen: (0, 0) = startplek van de drone, x = richting van de neus "
+                  "(voorcamera), y = links."
+                  + (" Wordt bij elke start opnieuw gezet." if cfg.RESET_FRAME_ON_TAKEOFF else "")]
         text = "\n".join(lines)
         if text != self._pad_text:
             self._pad_text = text

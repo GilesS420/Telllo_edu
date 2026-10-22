@@ -1,12 +1,13 @@
 """
 DroneApp: the core of the autonomous Tello. Flies missions (from the GUI or the
 Jetson) and can land on an H landing pad seen by the downward camera. Started by
-tello_gui.py. Object detection (puddles etc.) is done by a trained model
-elsewhere, not in this code.
+tello_gui.py. Puddles are found by a trained model (puddles.py) and their
+coordinates are sent to the Jetson.
 
 Threads:
     mission   the ONLY thread that sends flight commands to the Tello
     camera    downward camera: H landing pad detection, recording, GUI view
+    puddles   runs the trained puddle model on the newest frame (puddles.py)
     odometry  heading, height and visual odometry -> pose (odometry.py)
     telemetry all sensor values + terrain map, for the GUI (telemetry.py)
     status    status messages to the Jetson
@@ -29,6 +30,7 @@ from .helipad import HelipadDetector, draw_helipad
 from .jetson_link import JetsonLink
 from .navigator import MissionAborted, PathFollower, Pose, validate_waypoints
 from .odometry import Odometry
+from .puddles import PuddleDetector, draw_puddles
 from .telemetry import Telemetry
 
 
@@ -53,6 +55,7 @@ class DroneApp:
         self.follower = PathFollower(tello, self.pose, self.abort)
         self.cam = DownCam()
         self.pad_detector = HelipadDetector()
+        self.puddle_detector = PuddleDetector(on_new=self._puddle_found)
         self.pads = []               # H sightings this mission: (t, x, y, size), newest last
         self._pad_ref = None         # (t, Helipad, size cm) last full view of the H (for find_center)
         self._pad_target = None      # (x, y) the landing on the H aims at right now
@@ -132,6 +135,7 @@ class DroneApp:
             "odometry": self.pose.measured,
             "mission": self.mission_id, "waypoint_index": self.waypoint_index,
             "helipad": self._helipad_msg(),
+            "puddles": len(self.puddle_detector.puddles()),
         })
 
     def status_loop(self):
@@ -205,6 +209,7 @@ class DroneApp:
         """
         self.pose.reset()
         self.pads = []
+        self.puddle_detector.reset()
         if hasattr(self, "telemetry"):
             self.telemetry.terrain.reset()
         self.frame_id += 1
@@ -338,7 +343,8 @@ class DroneApp:
         except MissionAborted:   # Land/Abort during takeoff
             print("🛑 Mission aborted")
             self.link.send({"type": "mission_aborted", "id": self.mission_id,
-                            "helipad": self._helipad_msg()})
+                            "helipad": self._helipad_msg(),
+                            "puddles": self._puddles_msg()})
             self.safe_land()
             return
 
@@ -356,7 +362,8 @@ class DroneApp:
         except MissionAborted:
             print("🛑 Mission aborted")
             self.link.send({"type": "mission_aborted", "id": self.mission_id,
-                            "helipad": self._helipad_msg()})
+                            "helipad": self._helipad_msg(),
+                            "puddles": self._puddles_msg()})
             self.safe_land()
             return
         finally:
@@ -364,7 +371,8 @@ class DroneApp:
 
         print("🏁 Mission complete")
         self.link.send({"type": "mission_done", "id": self.mission_id,
-                        "helipad": self._helipad_msg()})
+                        "helipad": self._helipad_msg(),
+                        "puddles": self._puddles_msg()})
         try:
             if land_at_end and cfg.HELIPAD_LAND and self.seen_helipad() is not None:
                 # an H seen anywhere on the way is the landing spot
@@ -397,6 +405,13 @@ class DroneApp:
     def _helipad_msg(self):
         pad = self.seen_helipad()
         return None if pad is None else {"x": round(pad[0], 1), "y": round(pad[1], 1)}
+
+    def _puddles_msg(self):
+        return [p.to_msg() for p in self.puddle_detector.puddles()]
+
+    def _puddle_found(self, puddle):
+        """A new puddle is confirmed (puddle thread): tell the Jetson."""
+        self.link.send(dict(puddle.to_msg(), type="puddle", mission=self.mission_id))
 
     def land_on_seen_helipad(self, first_wp, speed):
         """
@@ -630,7 +645,12 @@ class DroneApp:
                 size = pad.size_px / w if pad.size_px else 1.0   # cross bar only: H > image
                 self.pads.append((t_frame, x, y, size))
                 del self.pads[:-200]
+        # puddle model (own thread, also on the ground so you can test it by hand;
+        # coordinates only in the air), only on the downward camera
+        if self.downvision_enabled:
+            self.puddle_detector.submit(gray, t_frame, height or pose[2], pose, self.airborne)
         vis = draw_helipad(cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR), pad)
+        draw_puddles(vis, self.puddle_detector.latest_boxes(gray.shape))
         with self._vis_lock:
             self._frame = frame.copy() if hasattr(frame, "copy") else frame
             self._vis = vis
@@ -639,6 +659,7 @@ class DroneApp:
         print("Cleaning up...")
         self.abort.set()
         self.running = False
+        self.puddle_detector.stop()
         if hasattr(self, "telemetry"):
             self.telemetry.stop()
         # Wait until the mission thread finished its current move, so only one
