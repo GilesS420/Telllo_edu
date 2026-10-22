@@ -10,6 +10,7 @@ drone/
     odometry.py       meet de echte beweging: camera (visuele odometrie), kompas, hoogte
     downcam.py        onderste camera: grijs + bijsnijden, pixel → coördinaat
     helipad.py        H-landingsplatform herkennen (zonder training)
+    puddles.py        plassen herkennen met een getraind YOLO-model + samenvoegen
     jetson_link.py    UDP/JSON-communicatie met de Jetson
     telemetry.py      alle sensorwaarden over tijd + terreinkaart (barometer − ToF)
     sim.py            simulator: alles testen zonder drone (`--sim`), met dozen op de vloer
@@ -141,14 +142,14 @@ gewoon uitgevoerd en getekend.
 
 | type | velden |
 |---|---|
-| `status` | `state`, `battery`, `pos {x,y,z,yaw}`, `odometry` (true/false), `mission`, `waypoint_index`, `helipad` (`{x, y}` of `null`) (elke seconde) |
+| `status` | `state`, `battery`, `pos {x,y,z,yaw}`, `odometry` (true/false), `mission`, `waypoint_index`, `helipad` (`{x, y}` of `null`), `puddles` (aantal gevonden plassen) (elke seconde) |
 | `ack` | `ref`, … |
 | `waypoint_reached` | `id`, `index`, `pos` |
-| `mission_done` / `mission_aborted` | `id`, `helipad` (waar de H gezien is, of `null`) |
+| `puddle` | `id`, `x`, `y` (cm, mission frame), `size_cm` (`[breedte, lengte]` van de box), `area_cm2`, `confidence`, `hits`, `mission` (één keer per plas, zodra hij `PUDDLE_MIN_HITS` keer gezien is) |
+| `mission_done` / `mission_aborted` | `id`, `helipad` (waar de H gezien is, of `null`), `puddles` (lijst zoals bij `puddle`) |
 | `error` | `ref`, `error` |
 
-Objectdetectie (bv. plassen) zit niet in deze code: dat doet een getraind model, bv. op de
-Jetson, op de beelden van de camera.
+Plassen worden herkend door een getraind model, zie [Plassen herkennen](#plassen-herkennen-getraind-model).
 
 ## Hoe het werkt
 
@@ -349,8 +350,7 @@ verkeerde kant op, dan schakelt die zichzelf uit (zie `YAW_SIGN`).
 
 ## Beelden opnemen (dataset voor het model)
 
-Objectdetectie gebeurt door een getraind model buiten deze code. Beelden om dat model te
-trainen neem je zo op:
+Beelden om het plasmodel te trainen neem je zo op:
 
 ```bash
 python tello_gui.py --record dataset
@@ -360,6 +360,46 @@ Dit slaat 2 beelden per seconde van de onderste camera op als PNG, al bijgesnede
 grijswaarden. Opnemen kun je ook aan en uit zetten met de knop *Opnemen* in de GUI. Train op
 beelden van **dezelfde camera, hoogte en vloer** als tijdens de missie: dat is belangrijker
 dan het aantal beelden.
+
+## Plassen herkennen (getraind model)
+
+De laptop draait een YOLO-model (Ultralytics) op het beeld van de onderste camera. De
+gevonden plassen krijgen een blauw kader in het camerabeeld van de GUI, met de zekerheid en
+(in de lucht) hun coördinaat. Op de kaart en in de 3D-weergave verschijnen ze als **P1, P2, …**
+De Jetson krijgt per plas één `puddle`-bericht met de coördinaten (zie [Protocol](#protocol-json-over-udp-één-bericht-per-pakket)).
+
+1. Train het model op je Roboflow-dataset (export *YOLOv11*):
+   ```bash
+   pip install ultralytics
+   yolo detect train data=dataset/data.yaml model=yolo11n.pt imgsz=320 epochs=100
+   ```
+2. Kopieer `runs/detect/train/weights/best.pt` naar **`models/puddles.pt`**.
+3. Start de GUI zoals altijd. In het vak met de H-info staat of het model geladen is.
+
+Test het model eerst los op opgenomen beelden, een map of een video:
+
+```bash
+python -m drone.puddles dataset/test/images
+python -m drone.puddles vlucht.mp4
+```
+
+Hoe het werkt (`drone/puddles.py`):
+
+* Het model draait in een eigen thread op het nieuwste beeld (max. `PUDDLE_HZ` keer per
+  seconde), zodat een traag model de H-detectie en het camerabeeld niet ophoudt.
+* Het model krijgt hetzelfde beeld als bij het opnemen: bijgesneden en in grijswaarden.
+* Het midden van elk kader wordt met de ToF-hoogte en de positie van de drone omgerekend naar
+  cm, net als bij de H. Kaders die de rand van het beeld raken tellen daarvoor niet mee (de
+  plas is maar half in beeld).
+* Kaders binnen `PUDDLE_MERGE_CM` van elkaar zijn dezelfde plas. Pas na `PUDDLE_MIN_HITS`
+  detecties telt een plas, zodat één foute detectie geen plas wordt.
+* Op de grond tekent hij de kaders ook (handig om te testen door de drone boven een plas te
+  houden), maar coördinaten komen er pas in de lucht.
+* Bij elke nieuwe start (en bij *Reset omgeving*) begint de lijst met plassen opnieuw.
+
+Instellingen in `drone/config.py`: `PUDDLE_MODEL` (ook `.onnx` of een TensorRT-`.engine`),
+`PUDDLE_CONF`, `PUDDLE_IMGSZ` (dezelfde waarde als bij het trainen), `PUDDLE_DEVICE`.
+Zonder `ultralytics` of zonder modelbestand werkt alles zoals vroeger, alleen zonder plassen.
 
 ## Kalibreren (belangrijk vóór de eerste echte vlucht)
 
