@@ -59,6 +59,7 @@ class _FrameRead:
 
 
 class FakeTello:
+    is_simulator = True
     RESPONSE_TIMEOUT = 7
 
     def __init__(self, drift=True, wind_cms=5.0, yaw_drift_dps=1.0, seed=0, flip_camera=False,
@@ -224,7 +225,24 @@ class FakeTello:
 
     def send_command_with_return(self, cmd, *a, **kw):
         print(f"[SIM] {cmd}")
+        if cmd.startswith("flip "):
+            self.flip(cmd.split()[1])
         return "ok"
+
+    def flip(self, direction):
+        if not self.is_flying:
+            raise RuntimeError("not flying")
+        if direction not in ("f", "b", "l", "r"):
+            raise ValueError("invalid flip direction")
+        # Deliberate real displacement so recovery tests cannot pass from a
+        # simulated 'ok' that never moved the aircraft.
+        time.sleep(0.3)
+        with self._lock:
+            fwd = {"f": 20, "b": -20}.get(direction, 0)
+            left = {"l": 20, "r": -20}.get(direction, 0)
+            angle = math.radians(self.yaw)
+            self.x += fwd * math.cos(angle) - left * math.sin(angle)
+            self.y += fwd * math.sin(angle) + left * math.cos(angle)
 
     def get_frame_read(self):
         return _FrameRead(self)

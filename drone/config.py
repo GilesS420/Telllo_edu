@@ -32,7 +32,21 @@ MAX_STEP_CM = 100           # long segments are split in steps of max this lengt
                             # (smaller = more corrections + faster abort)
 MIN_MOVE_CM = 20            # Tello cannot 'go' when |x|,|y|,|z| are all < 20
 MIN_BATTERY = 5             # refuse a mission below this battery %
+FLIP_MIN_BATTERY = 50       # Tello flips are unreliable/blocked below this battery %
+FLIP_RETURN_RC_SPEED = 25   # cap approach speed to avoid repeated overshoot with SDK/video delay
+FLIP_RETURN_GAIN = 1.2
+FLIP_RETURN_DAMPING = 0.4  # moderate velocity feedback avoids delayed opposite corrections
+FLIP_RETURN_Z_SPEED = 8    # cm/s, keep altitude corrections slower than horizontal recovery
+FLIP_RETURN_TOL_CM = 3     # measured xy radius and altitude tolerance, not absolute accuracy
+FLIP_RETURN_TIMEOUT_S = 8
+FLIP_RETURN_SETTLE_S = 0.4 # remain within tolerance before reporting a confirmed return
+FLIP_RECORD_PATH = "flight_logs/last_flip.json"  # written after recovery, never before SDK send
+FLIP_TRACK_TIMEOUT_S = 5   # maximum search; a confirmed match starts the return immediately
+FLIP_ACK_TIMEOUT_S = 5     # one SDK request; do not retry an acrobatic manoeuvre
 RESPONSE_TIMEOUT = 20       # s, djitellopy wait time for 'ok' (long go commands)
+CONNECT_TIMEOUT = 3         # s per SDK handshake attempt; independent of long moves
+CONNECT_ATTEMPTS = 2
+CONNECT_STATE_TIMEOUT = 2   # s to receive telemetry after the SDK acknowledgement
 KEEPALIVE_INTERVAL = 5      # s, Tello lands by itself after 15 s without commands
 LAND_AT_END = True          # land after the last waypoint (mission can override)
 
@@ -62,6 +76,13 @@ HELIPAD_LAND = True         # mission end: look for an H near the last waypoint 
 HELIPAD_RADIUS_CM = 80      # only an H within this distance of the last waypoint counts
                             # (an H seen anywhere during the mission is always used)
 HELIPAD_MIN_SIGHTINGS = 3   # an H must be seen this often at one place to fly back to it
+HELIPAD_TRACK_HOLD_S = 0.35 # keep the overlay through brief missed detections
+HELIPAD_CONTROL_MAX_AGE_S = 0.25  # never descend using an older camera offset
+HELIPAD_CENTER_STABLE_S = 0.3     # centre must remain consistent before descending
+HELIPAD_DAMPING = 0.8
+HELIPAD_APPROACH_MAX_S = 15       # bounded remembered-position approach, adapted to distance
+HELIPAD_RELOCALIZE_MAX_CM = 60    # known-pad relocalization only near its predicted position
+HELIPAD_RELOCALIZE_SPREAD_CM = 5  # independent observations must agree on the frame correction
                             # (the camera sees about +-45 cm around the drone at 80 cm, +-85 at 150)
 HELIPAD_SEARCH_S = 2.0      # hover this long at the end point looking for the H
 HELIPAD_SEARCH_HEIGHT_CM = 150  # not found: climb to this height (sees more floor) and look again
@@ -134,6 +155,9 @@ VO_MAX_YAW_STEP = 1.5       # deg turned since the keyframe; more = take a new k
 VO_KEY_SHIFT_PX = 20        # new keyframe after this much image shift
 VO_KEY_QUALITY = 0.3        # ... or when the match quality drops below this
 VO_LOST_S = 0.7             # s without good frames = odometry lost
+VO_MAX_TILT_DEG = 12        # translation-only floor tracking needs a near-level camera
+VO_MIN_CORRELATION = 0.5    # reject unrelated/blurred floor frames
+VO_MAX_SPEED_CMS = 150      # reject impossible visual jumps
 
 # ---------------------------------------------------------------------------
 # Telemetry (sensor graphs in the GUI) and terrain analysis

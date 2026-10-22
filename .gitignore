@@ -4,3 +4,4 @@ capture_*.jpg
 venv/
 .venv/
 dataset/
+flight_logs/

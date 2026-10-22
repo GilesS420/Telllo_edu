@@ -203,7 +203,8 @@ class Telemetry:
             alt = self._alt
 
         ground = None
-        if airborne and raw is not None and tof is not None:
+        position_valid = self.pose.measured and self.pose.position_valid
+        if airborne and position_valid and raw is not None and tof is not None:
             ground = self.terrain.add(x, y, raw, tof)
 
         temp = None
@@ -222,6 +223,7 @@ class Telemetry:
             "ax": g("agx"), "ay": g("agy"), "az": g("agz"),
             "x": x, "y": y, "z": z, "yaw": yaw,
             "odo": bool(self.pose.measured) if airborne else None,
+            "position_valid": position_valid,
             "odo_q": self.pose.quality if airborne else None,
             "pad": int(pad) if pad is not None and pad > 0 else None,
         }

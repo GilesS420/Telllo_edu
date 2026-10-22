@@ -18,6 +18,8 @@ Run this file to test it on saved images or a video:
     python -m drone.helipad dataset/
 """
 
+import math
+
 import cv2
 import numpy as np
 
@@ -55,6 +57,10 @@ class Helipad:
 
 class HelipadDetector:
     def find(self, gray, height_cm=None):
+        candidates = self.find_candidates(gray, height_cm)
+        return candidates[0] if candidates else None
+
+    def find_candidates(self, gray, height_cm=None):
         """
         Best Helipad in an already prepared (grey, cropped) image, or None.
         height_cm (ToF): when given, blobs that can't be an H of a real size
@@ -73,14 +79,23 @@ class HelipadDetector:
             for mode in (cv2.THRESH_BINARY_INV, cv2.THRESH_BINARY):
                 masks.append(cv2.adaptiveThreshold(blur, 255, cv2.ADAPTIVE_THRESH_MEAN_C, mode,
                                                    block, cfg.HELIPAD_ADAPTIVE_C))
-        best = None
+        candidates = []
         for mask in masks:
-            contours, _ = cv2.findContours(mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-            for c in contours:
-                cand = self._check(c, W, H, size_px)
-                if cand and (best is None or cand.score < best.score):
-                    best = cand
-        return best
+            # Repair narrow compression/noise breaks in a bar. Keep the original
+            # mask too: closing alone can fill the gaps of a small distant H.
+            closed = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+            for variant in (mask, closed):
+                contours, _ = cv2.findContours(variant, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+                for c in contours:
+                    cand = self._check(c, W, H, size_px)
+                    if cand:
+                        candidates.append(cand)
+        distinct = []
+        for cand in sorted(candidates, key=lambda pad: pad.score):
+            if not any(math.hypot(cand.cx - old.cx, cand.cy - old.cy)
+                       < max(5, 0.2 * min(cand.size_px, old.size_px)) for old in distinct):
+                distinct.append(cand)
+        return distinct
 
     @staticmethod
     def _check(c, W, H, size_px=None):
@@ -111,14 +126,73 @@ class HelipadDetector:
         return Helipad(m["m10"] / m["m00"], m["m01"] / m["m00"], max(rw, rh), score, c)
 
 
-def draw_helipad(vis, pad):
+class HelipadTracker:
+    """Confirm a consistent H across distinct frames; never refresh a stale hit."""
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.pad = None
+        self.last_seen = float("-inf")
+        self.hits = 0
+        self.confirmed = False
+        self.shape = None
+        self.velocity = (0.0, 0.0)
+        self.last_raw = None
+
+    def update(self, candidates, timestamp, shape):
+        if shape != self.shape or timestamp - self.last_seen > cfg.HELIPAD_TRACK_HOLD_S:
+            self.reset()
+            self.shape = shape
+        if timestamp <= self.last_seen:
+            return self.pad if self.confirmed else None
+        if self.pad is not None:
+            dt = min(timestamp - self.last_seen, cfg.HELIPAD_TRACK_HOLD_S)
+            predicted = (self.pad.cx + self.velocity[0] * dt,
+                         self.pad.cy + self.velocity[1] * dt)
+            gate = max(12, shape[1] * 0.04, self.pad.size_px * 0.45)
+            gate += min(12, math.hypot(*self.velocity) * dt * 0.5)
+            matching = [pad for pad in candidates
+                        if math.hypot(pad.cx - predicted[0], pad.cy - predicted[1]) < gate
+                        and 0.6 < pad.size_px / self.pad.size_px < 1.7]
+            chosen = min(matching, key=lambda pad: pad.score +
+                         0.15 * math.hypot(pad.cx - predicted[0], pad.cy - predicted[1]) / gate,
+                         default=None)
+        else:
+            chosen = min(candidates, key=lambda pad: pad.score, default=None)
+        if chosen is not None:
+            raw = (chosen.cx, chosen.cy)
+            if self.last_raw is not None and timestamp > self.last_seen:
+                dt = timestamp - self.last_seen
+                self.velocity = tuple(0.5 * old + 0.5 * max(-200, min(200, (new - before) / dt))
+                                      for old, new, before in zip(self.velocity, raw, self.last_raw))
+            self.last_raw = raw
+            if self.pad is not None:
+                alpha = 0.7  # suppress centre jitter without a long control lag
+                chosen = Helipad(self.pad.cx + alpha * (chosen.cx - self.pad.cx),
+                                 self.pad.cy + alpha * (chosen.cy - self.pad.cy),
+                                 self.pad.size_px + alpha * (chosen.size_px - self.pad.size_px),
+                                 chosen.score, chosen.contour)
+            self.pad = chosen
+            self.last_seen = timestamp
+            self.hits += 1
+            self.confirmed = self.hits >= cfg.HELIPAD_MIN_SIGHTINGS
+        # On a miss, keep the confirmed overlay briefly; the original timestamp
+        # lets flight control distinguish it from a fresh measurement.
+        return self.pad if self.confirmed else None
+
+
+def draw_helipad(vis, pad, stale=False):
     """Draw a found H on a BGR image (in place)."""
     if pad is None:
         return vis
-    cv2.drawContours(vis, [pad.contour], -1, (0, 220, 0), 2)
+    color = (0, 170, 255) if stale else (0, 220, 0)
+    cv2.drawContours(vis, [pad.contour], -1, color, 2)
     cx, cy = int(pad.cx), int(pad.cy)
-    cv2.drawMarker(vis, (cx, cy), (0, 220, 0), cv2.MARKER_CROSS, 18, 2)
-    cv2.putText(vis, "H", (cx + 8, cy - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 220, 0), 1)
+    cv2.drawMarker(vis, (cx, cy), color, cv2.MARKER_CROSS, 18, 2)
+    cv2.putText(vis, "H (geheugen)" if stale else "H", (cx + 8, cy - 8),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
     return vis
 
 

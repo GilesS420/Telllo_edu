@@ -85,6 +85,7 @@ class MapView:
                 "--", color=C["danger"], linewidth=1, alpha=0.6, zorder=2)
         P = lambda *a, **k: ax.plot([], [], *a, **k)[0]
         self.trail = P("-", color=C["trail"], linewidth=1.3, alpha=0.9, zorder=3)
+        self.local_trail = P("--", color=C["warn"], linewidth=1.3, alpha=0.9, zorder=3)
         self.mission = P("-", color=C["accent"], linewidth=2.2, alpha=0.8, zorder=3)
         self.reached = P("o", color=C["ok"], markersize=9, linestyle="none", zorder=4)
         self.draft = P("o--", color=C["draft"], markersize=7, linewidth=1.5, zorder=5)
@@ -96,6 +97,8 @@ class MapView:
         self.drone = Polygon([[0, 0]], closed=True, facecolor=C["danger"], edgecolor="white",
                              linewidth=1, zorder=7)
         ax.add_patch(self.drone)
+        self.position_note = ax.text(0.01, 0.90, "", transform=ax.transAxes,
+                                     color=C["warn"], fontsize=9, zorder=10, va="top")
         self.hover_txt = ax.text(0.01, 0.99, "", transform=ax.transAxes, color=C["text"],
                                  fontsize=8, zorder=9, va="top",
                                  bbox=dict(boxstyle="round,pad=0.3", facecolor=C["bg"],
@@ -234,6 +237,10 @@ class MapView:
         self.mission.set_data(*sw(mission if mission != wps else []))
         self.reached.set_data(*sw(mission[:s["reached"]]))
         self.trail.set_data(*sw(s["trail"]))
+        self.local_trail.set_data(*sw(s.get("local_trail", [])))
+        lost = s.get("position_mode") == "lost"
+        self.position_note.set_text(s.get("position_note", ""))
+        self.drone.set_alpha(0.2 if lost else 1.0)
         # drone: arrow-shaped triangle pointing along the nose
         a = math.radians(yaw)
         f = (math.cos(a), math.sin(a))
@@ -243,7 +250,7 @@ class MapView:
         self.drone.set_xy([(py, px) for px, py in tri])
         fp = s.get("footprint")
         self.footprint.set_xy([(py, px) for px, py in fp] if fp else [(y, x)])
-        self.footprint.set_visible(bool(fp))
+        self.footprint.set_visible(bool(fp) and not lost)
         self._terrain(s["terrain"], s["terrain_version"])
 
         # H landing pad seen this flight
@@ -274,7 +281,8 @@ class MapView:
                             for pt, text, c in labels]
 
         # limits: fit everything (or the user's zoom), equal scale
-        pts = [(p[1], p[0]) for p in wps + mission + s["trail"][-600:]] + [(y, x), (0, 0)]
+        pts = [(p[1], p[0]) for p in wps + mission + s["trail"] + s.get("local_trail", [])
+               if all(math.isfinite(v) for v in p)] + [(y, x), (0, 0)]
         if pad is not None:
             pts.append((pad[1], pad[0]))
         pts += [(c[1], c[0]) for c in s["terrain"]]
