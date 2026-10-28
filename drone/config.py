@@ -193,3 +193,20 @@ PUDDLE_PHOTO_DIR = "photos"
 PUDDLE_CENTER_TOL_CM = 6    # puddle middle at most this far from straight below the drone ...
 PUDDLE_CENTER_STABLE_S = 0.5  # ... for this long before the photo
 PUDDLE_PHOTO_TIMEOUT_S = 15  # not centred after this: take the photo anyway (offset is logged)
+
+# ---------------------------------------------------------------------------
+# Path on the floor (a strip of tape or paper) seen by the downward camera.
+# Recognised in every flight (drawn on the GUI's ground map); the mission type
+# 'follow_path' flies along it. Tune the look of the strip here.
+# ---------------------------------------------------------------------------
+PATH_DETECT = True
+PATH_DARK = True            # True: dark strip on a lighter floor, False: light strip on dark
+PATH_WIDTH_CM = (2, 30)     # width of the strip
+PATH_MIN_LENGTH_CM = 35     # shorter dark/light shapes are not the path (H bars, puddles)
+PATH_MIN_CONTRAST = 25      # grey levels between strip and floor
+PATH_SPEED = 20             # cm/s along the path
+PATH_LOOKAHEAD_CM = 25      # aim this far ahead along the strip
+PATH_GAIN = 1.0             # 1/s, sideways speed per cm off the middle of the strip
+PATH_END_CM = 8             # the strip ends this close ahead (inside the image): path done
+PATH_LOST_S = 2.0           # strip not seen this long: stop (end of the path or lost)
+PATH_MAX_S = 300            # safety: never follow longer than this

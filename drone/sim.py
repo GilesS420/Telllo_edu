@@ -12,6 +12,7 @@ What it simulates:
   end-to-end
 * IMU yaw, the ToF height sensor and the barometer, plus the other state
   fields (attitude, speeds, accelerations, temperature, flight time)
+* a path of dark tape on the floor (SIM_PATH) for the path recognition
 * terrain: a few boxes on the floor, so the terrain analysis (barometer minus
   ToF) can be tested
 """
@@ -33,6 +34,9 @@ SIM_TERRAIN = [(40, 90, 70, 130, 30),     # box under the example square path
                (280, 340, -160, -100, 45)]  # crate
 # Landing pad: white paper with a black H, (x, y, paper size, H size, rotation deg)
 SIM_HELIPAD = (10, -30, 42, 26, 20)
+# Path on the floor: dark tape (world x, y points in cm), width in cm, grey value
+SIM_PATH = ([(-15, 0), (130, 0), (165, 10), (195, 35), (215, 70), (225, 110), (230, 180)],
+            5, 55)
 SIM_BARO_M = 112.0          # barometer altitude of the floor (m above sea level)
 SIM_BARO_NOISE_CM = 6.0
 SIM_IMG_W, SIM_IMG_H = 320, 240
@@ -114,6 +118,12 @@ class FakeTello:
             h_mask = (abs(u) <= hs / 2) & (abs(v) <= hs / 2) & (
                 (abs(v) >= hs / 2 - bar) | (abs(u) <= bar * 0.45))
             tex[h_mask] = 40
+        if SIM_PATH:
+            pts, width, grey = SIM_PATH
+            px = np.array([[(y + TEX_HALF) / TEX_RES, (x + TEX_HALF) / TEX_RES] for x, y in pts],
+                          np.int32)
+            cv2.polylines(tex, [px], False, float(grey), int(round(width / TEX_RES)),
+                          lineType=cv2.LINE_AA)
         return tex
 
     def truth(self):

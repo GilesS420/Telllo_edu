@@ -10,9 +10,10 @@ takeoff (DroneApp.frame_link) says where the new frame lies in the old one, so
 all flights since the last Reset share the frame of the first flight (S1).
 A Reset (drone moved by hand) starts a new path.
 
-The virtual path (route) is the planned route of those flights, from each
-takeoff spot through its waypoints. Every puddle is projected onto it: so many
-cm along the route from S1, so many cm left or right of it.
+The virtual path (route) is either the path the camera recognised on the floor
+(a strip of tape, DroneApp.path_seen) or the planned route of those flights,
+from each takeoff spot through its waypoints. Every puddle is projected onto
+it: so many cm along the route from its start, so many cm left or right of it.
 
 Scroll = zoom, "Passend" in the toolbar fits everything again.
 """
@@ -26,6 +27,8 @@ from matplotlib.patches import Circle, Polygon
 from .theme import C, mpl_style
 
 SAME_PLACE_CM = 30      # H sightings / pads closer than this are the same pad
+SEEN_GAP_CM = 40        # recognised path points further apart: separate pieces
+SEEN_STEP_CM = 12       # keep one recognised path point per this distance
 ARROW_EVERY_CM = 60     # direction arrows along the path
 ROUTE_TICK_CM = 100     # distance marks along the virtual path
 LABEL_BOX = dict(boxstyle="round,pad=0.2", facecolor=C["bg"], edgecolor="none", alpha=0.75)
@@ -81,6 +84,7 @@ class Flight:
         self.pads = []          # H places (own frame)
         self.puddles = []       # (id, x, y, w cm, h cm) (own frame)
         self.mission = []       # planned waypoints (own frame)
+        self.seen = []          # recognised path on the floor, in order (own frame)
 
     @property
     def used(self):
@@ -93,6 +97,7 @@ class FlightLog:
     def __init__(self):
         self.flights = []
         self._airborne = False
+        self._mission_id = None
         self.epoch = 0          # +1 whenever the path starts again (the ground map too)
 
     def clear(self):
@@ -147,22 +152,41 @@ class FlightLog:
                     cur.pads.append((px, py))
             cur.puddles = [(p.id, p.x, p.y, p.w_cm, p.h_cm)
                            for p in app.puddle_detector.puddles()]
-            if app.current_waypoints:
+            cur.seen = []
+            for _, sx, sy in list(app.path_seen):   # thinned: per-frame noise makes it zigzag
+                if not cur.seen or math.hypot(sx - cur.seen[-1][0],
+                                              sy - cur.seen[-1][1]) >= SEEN_STEP_CM:
+                    cur.seen.append((sx, sy))
+            if app.mission_id is not None and app.mission_id != self._mission_id:
+                self._mission_id = app.mission_id   # a new mission: its waypoints (or none)
                 cur.mission = [w[:2] for w in app.current_waypoints]
 
     def to_world(self, x, y):
         """Point of the current flight frame -> path frame."""
         return to_world(self.flights[-1].T, x, y) if self.flights else (x, y)
 
-    def scene(self):
-        """Everything in the path frame, with labels, ready to draw or save."""
+    def scene(self, source="seen"):
+        """
+        Everything in the path frame, with labels, ready to draw or save.
+        source: virtual path = "seen" (recognised path, the planned route when none
+        was seen) or "planned".
+        """
         used = [f for f in self.flights if f.used]
         many = len(used) > 1
         out = {"paths": [], "starts": [], "pads": [], "puddles": [], "route": [],
-               "flights": len(used)}
+               "planned": [], "seen": [], "flights": len(used)}
         for k, f in enumerate(used, 1):
-            if f.mission:   # virtual path: from the takeoff spot through the waypoints
-                out["route"] += [to_world(f.T, *p) for p in f.starts[:1] + f.mission]
+            if f.mission:   # planned: from the takeoff spot through the waypoints
+                out["planned"] += [to_world(f.T, *p) for p in f.starts[:1] + f.mission]
+            piece = []
+            for p in (to_world(f.T, *q) for q in f.seen):
+                if piece and math.hypot(p[0] - piece[-1][0], p[1] - piece[-1][1]) > SEEN_GAP_CM:
+                    if len(piece) > 1:
+                        out["seen"].append(piece)
+                    piece = []
+                piece.append(p)
+            if len(piece) > 1:
+                out["seen"].append(piece)
             out["paths"] += [[to_world(f.T, *p) for p in path] for path in f.paths]
             for x, y in f.starts:
                 out["starts"].append({"label": f"S{len(out['starts']) + 1}", "flight": k,
@@ -177,6 +201,12 @@ class FlightLog:
                 out["puddles"].append({"label": f"V{k}-P{pid}" if many else f"P{pid}",
                                        "flight": k, "id": pid, "w_cm": w, "h_cm": h}
                                       | _xy(f.T, x, y))
+        # the longest recognised piece is the path (shorter ones: crossed it elsewhere)
+        seen = max(out["seen"], key=lambda q: sum(math.hypot(b[0] - a[0], b[1] - a[1])
+                                                  for a, b in zip(q, q[1:])), default=[])
+        use_seen = source == "seen" and len(seen) > 1
+        out["route"] = seen if use_seen else out["planned"]
+        out["route_kind"] = "herkend pad" if use_seen else "geplande route"
         out["route_cm"] = sum(math.hypot(b[0] - a[0], b[1] - a[1])
                               for a, b in zip(out["route"], out["route"][1:]))
         for p in out["puddles"]:
@@ -233,6 +263,7 @@ class PathView:
         self.route = P("-", color=C["accent"], linewidth=10, alpha=0.3, zorder=2,
                        solid_capstyle="round", solid_joinstyle="round")
         self.route_mid = P("--", color=C["accent"], linewidth=1, alpha=0.9, zorder=2)
+        self._seen = []     # recognised path pieces (orange)
         self.drone = Polygon([[0, 0]], closed=True, facecolor=C["danger"], edgecolor="white",
                              linewidth=1, zorder=9)
         ax.add_patch(self.drone)
@@ -353,7 +384,15 @@ class PathView:
         self._draw_marks(s)
         for line in (self.route, self.route_mid):
             line.set_data([p[1] for p in s["route"]], [p[0] for p in s["route"]])
+        while len(self._seen) > len(s["seen"]):
+            self._seen.pop().remove()
+        while len(self._seen) < len(s["seen"]):
+            self._seen += self.ax.plot([], [], "-", color=C["warn"], linewidth=3, alpha=0.9,
+                                       zorder=3, solid_capstyle="round")
+        for line, piece in zip(self._seen, s["seen"]):
+            line.set_data([p[1] for p in piece], [p[0] for p in piece])
         pts = [p for path in s["paths"] for p in path[-800:]] + s["route"] + [(0, 0)]
+        pts += [p for piece in s["seen"] for p in piece]
         pts += [(p["x"], p["y"]) for p in s["starts"] + s["pads"] + s["puddles"]]
         if self._ground_extent:
             y0, y1, x0, x1 = self._ground_extent
@@ -384,16 +423,20 @@ class PathView:
 
 
 def legend(parent):
-    """Colour legend as a row of tk labels (no matplotlib legend over the plot)."""
+    """Colour legend as two rows of tk labels (no matplotlib legend over the plot)."""
     import tkinter as tk
-    row = tk.Frame(parent, bg=C["panel"])
-    for sym, color, text in (("▦", C["muted"], "grond (camerabeelden)"),
-                             ("━", C["trail"], "gevlogen (pijl = richting)"),
-                             ("━", C["accent"], "virtueel pad (streep = 1 m)"),
-                             ("□", C["ok"], "S = start"), ("●", C["cyan"], "H = platform"),
-                             ("●", C["water"], "P = plas"), ("◆", C["water"], "plas op het pad"),
-                             ("▲", C["danger"], "drone")):
-        tk.Label(row, text=sym, fg=color, bg=C["panel"]).pack(side=tk.LEFT)
-        tk.Label(row, text=text, fg=C["muted"], bg=C["panel"],
-                 font=("TkDefaultFont", 8)).pack(side=tk.LEFT, padx=(0, 10))
-    return row
+    box = tk.Frame(parent, bg=C["panel"])
+    for items in ((("▦", C["muted"], "grond (camerabeelden)"),
+                   ("━", C["trail"], "gevlogen (pijl = richting)"),
+                   ("━", C["warn"], "herkend pad"),
+                   ("━", C["accent"], "virtueel pad (streep = 1 m)")),
+                  (("□", C["ok"], "S = start"), ("●", C["cyan"], "H = platform"),
+                   ("●", C["water"], "P = plas"), ("◆", C["water"], "plas op het pad"),
+                   ("▲", C["danger"], "drone"))):
+        row = tk.Frame(box, bg=C["panel"])
+        row.pack(fill=tk.X)
+        for sym, color, text in items:
+            tk.Label(row, text=sym, fg=color, bg=C["panel"]).pack(side=tk.LEFT)
+            tk.Label(row, text=text, fg=C["muted"], bg=C["panel"],
+                     font=("TkDefaultFont", 8)).pack(side=tk.LEFT, padx=(0, 10))
+    return box

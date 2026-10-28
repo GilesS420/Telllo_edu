@@ -94,6 +94,14 @@ def cam_to_body(fwd, left):
     return fwd * math.cos(a) - left * math.sin(a), fwd * math.sin(a) + left * math.cos(a)
 
 
+def pixel_to_body(cx, cy, img_w, img_h, height_cm):
+    """Image position -> (forward, left) cm from the drone's centre."""
+    s = cm_per_pixel(img_w, height_cm)
+    fwd, left = cam_to_body(-(cy - img_h / 2) * s * cfg.CAM_FORWARD_SIGN,
+                            -(cx - img_w / 2) * s * cfg.CAM_LEFT_SIGN)
+    return fwd + cfg.CAM_OFFSET_CM[0], left + cfg.CAM_OFFSET_CM[1]
+
+
 def pixel_to_world(cx, cy, img_w, img_h, height_cm, pose):
     """
     Convert an image position to mission-frame coordinates (cm).
@@ -102,9 +110,7 @@ def pixel_to_world(cx, cy, img_w, img_h, height_cm, pose):
     Returns (x, y, cm_per_px).
     """
     s = cm_per_pixel(img_w, height_cm)
-    fwd, left = cam_to_body(-(cy - img_h / 2) * s * cfg.CAM_FORWARD_SIGN,
-                            -(cx - img_w / 2) * s * cfg.CAM_LEFT_SIGN)
-    fwd, left = fwd + cfg.CAM_OFFSET_CM[0], left + cfg.CAM_OFFSET_CM[1]
+    fwd, left = pixel_to_body(cx, cy, img_w, img_h, height_cm)
     x, y, _, yaw = pose
     yaw = math.radians(yaw)
     wx = x + fwd * math.cos(yaw) - left * math.sin(yaw)
