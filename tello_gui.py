@@ -66,6 +66,7 @@ STATES = {"idle": ("AAN DE GROND", C["faint"]), "taking_off": ("OPSTIJGEN", C["w
           "error": ("FOUT", C["danger"])}
 MAP_HELP = "klik = punt · slepen = verplaatsen · rechtsklik = wissen · scroll = zoom"
 WINDOWS = {"30 s": 30, "1 min": 60, "5 min": 300}
+ROUTE_SOURCES = {"Herkend pad": "seen", "Geplande route": "planned"}   # virtual path
 FLIGHTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "json_flights")
 
 
@@ -189,6 +190,8 @@ class TelloGUI:
             row=2, column=0, sticky="ew", padx=2, pady=2)
         tk_button(grid, "↺  Reset omgeving", self.reset_environment, "#5a4a8a").grid(
             row=2, column=1, sticky="ew", padx=2, pady=2)
+        tk_button(grid, "〰  Volg pad op de vloer", self.follow_path, "#8a5a1f").grid(
+            row=3, column=0, columnspan=2, sticky="ew", padx=2, pady=2)
         grid.columnconfigure(0, weight=1, uniform="b")
         grid.columnconfigure(1, weight=1, uniform="b")
         tk_button(box, "⚠  NOODSTOP – motoren uit  (X)", self.emergency, "#c62f37",
@@ -306,6 +309,10 @@ class TelloGUI:
                    command=self.clear_trail).pack(side=tk.LEFT, padx=(6, 2))
         ttk.Button(bar, text="Opslaan (PNG + JSON)", style="Small.TButton",
                    command=self.export_path).pack(side=tk.LEFT, padx=2)
+        self.route_seg = Segmented(bar, list(ROUTE_SOURCES), self._route_changed,
+                                   "Herkend pad", style="TFrame")
+        self.route_seg.pack(side=tk.RIGHT)
+        ttk.Label(bar, text="Plassen op", foreground=C["muted"]).pack(side=tk.RIGHT, padx=(0, 6))
         legend(tab).pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(0, 4))
         split = ttk.Frame(tab)
         split.pack(fill=tk.BOTH, expand=True)
@@ -670,7 +677,7 @@ class TelloGUI:
 
     def _update_path(self):
         # Teken de grondkaart met startlocaties, H's, plassen en het pad, en de lijst ernaast.
-        s = self.flight_log.scene()
+        s = self.flight_log.scene(ROUTE_SOURCES[self.route_seg.value])
         pose = None
         if self.app.airborne:
             x, y = self.flight_log.to_world(self.show[0], self.show[1])
@@ -699,7 +706,7 @@ class TelloGUI:
                              + ("midden" if abs(side) < 5 else
                                 f"{abs(side):.0f} cm {'links' if side > 0 else 'rechts'}"))
         if s["route"]:
-            lines += ["", f"Virtueel pad: {s['route_cm'] / 100:.1f} m (geplande route vanaf S1)."]
+            lines += ["", f"Virtueel pad: {s['route_cm'] / 100:.1f} m ({s['route_kind']})."]
         lines += ["", "cm, t.o.v. het assenkruis = startplek van de eerste vlucht (x = vooruit, y = links). Reset omgeving = nieuw pad."]
         if s["flights"] > 1:
             lines.append("De Jetson krijgt plassen in het assenstelsel van hun eigen vlucht.")
@@ -1151,7 +1158,7 @@ class TelloGUI:
 
     def export_path(self):
         # Sla het vluchtpad op als afbeelding, met de coördinaten in een JSON ernaast.
-        s = self.flight_log.scene()
+        s = self.flight_log.scene(ROUTE_SOURCES[self.route_seg.value])
         if not s["starts"]:
             self.toast.show("Er is nog geen gevlogen pad.", "warn")
             return
@@ -1171,7 +1178,8 @@ class TelloGUI:
                        "puddles": [r({k: v for k, v in p.items() if k != "on_route"})
                                    for p in s["puddles"]],
                        "route": [[round(x), round(y)] for x, y in s["route"]],
-                       "route_cm": round(s["route_cm"]),
+                       "route_cm": round(s["route_cm"]), "route_kind": s["route_kind"],
+                       "recognised_path": [[[round(x), round(y)] for x, y in p] for p in s["seen"]],
                        "paths": [[[round(x), round(y)] for x, y in p] for p in s["paths"]]},
                       f, indent=1)
         self.toast.show(f"Opgeslagen: {os.path.basename(path)} (+ _grond.png, .json)", "ok")
@@ -1189,6 +1197,10 @@ class TelloGUI:
         self.app.telemetry.terrain.reset()
         self._summary = None
         self.toast.show("Terreinkaart gewist.", "info")
+
+    def _route_changed(self, _value):
+        # Kies waarop de plassen geprojecteerd worden: herkend pad of geplande route.
+        self._next["path"] = 0
 
     def _terrain3d_changed(self):
         # Toon of verberg terrein in de 3D-weergave.
@@ -1214,6 +1226,14 @@ class TelloGUI:
                 "fine": FINE_MODES[self.fine.get()], "level": self.level.get(),
                 "helipad_search": self.helipad_search.get() and land_at_end,
                 "waypoints": [list(p) for p in waypoints]}
+
+    def follow_path(self):
+        # Laat de drone de strook (tape/papier) op de vloer volgen i.p.v. de waypoints.
+        self.mission_count += 1
+        self.app.submit({"type": "follow_path", "id": f"gui-pad-{self.mission_count}",
+                         "speed": min(self.speed.get(), cfg.PATH_SPEED),
+                         "land_at_end": self.land_at_end.get()})
+        self.toast.show("Pad volgen: de drone zoekt de strook onder zich.", "ok")
 
     def start_mission(self):
         # Start de volledige missie met de huidige waypointlijst.

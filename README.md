@@ -105,8 +105,10 @@ van in pop-ups.
   één foto van de grond wordt. Hoe beter de odometrie, hoe mooier de naden. Erop staan de
   **plassen** (blauwe cirkels op hun gemeten grootte, P1, P2, …), de gevonden
   **H-platformen** (cyaan H1, H2, …), de **startlocaties** (groene vierkantjes S1, S2, …),
+  het **herkende pad** (oranje, zie [Pad op de vloer](#pad-op-de-vloer-herkennen-en-volgen)),
   het **virtuele pad** (blauwe band met een streepje per meter) en dun het gevlogen spoor
-  (roze, pijltjes = vliegrichting). Het virtuele pad is de geplande route vanaf de start;
+  (roze, pijltjes = vliegrichting). Het virtuele pad is het herkende pad of de geplande route
+  vanaf de start (keuze rechtsboven);
   elke plas wordt erop geprojecteerd (blauw ruitje) en de lijst rechts zegt waar hij ligt:
   *x m op het pad, y cm links/rechts*, plus de coördinaten (cm).
   Elke start zet het assenstelsel opnieuw op de drone, maar de GUI hangt de vluchten aan
@@ -148,6 +150,7 @@ gewoon uitgevoerd en getekend.
 | type | velden | betekenis |
 |---|---|---|
 | `mission` | `id`, `waypoints` (`[{"x","y","z"}, …]` of `[[x,y,z], …]`), optioneel `speed` (10-100 cm/s), `land_at_end`, `nav_mode` (`"go"`/`"rc"`), `fine` (`"auto"`/`"all"`/`"last"`/`"off"`), `level`, `helipad_search` (zie [Landen op een H](#landen-op-een-h-helipad)) | Opstijgen (als nodig) en de waypoints afvliegen |
+| `follow_path` | `id`, optioneel `speed` (5-50 cm/s, standaard `PATH_SPEED`), `land_at_end`, `reverse` | Opstijgen (als nodig) en de strook op de vloer volgen tot ze ophoudt (zie [Pad op de vloer](#pad-op-de-vloer-herkennen-en-volgen)) |
 | `abort` | – | Missie afbreken na de huidige stap en landen |
 | `land` / `takeoff` | – | `land` breekt ook een lopende missie af |
 | `helipad_land` | – | Test zonder pad: opstijgen (als nodig), een H onder de drone zoeken en erop landen |
@@ -164,10 +167,34 @@ gewoon uitgevoerd en getekend.
 | `waypoint_reached` | `id`, `index`, `pos` |
 | `puddle` | `id`, `x`, `y` (cm, mission frame), `size_cm` (`[breedte, lengte]` van de box), `area_cm2`, `confidence`, `hits`, `mission` (één keer per plas, zodra hij `PUDDLE_MIN_HITS` keer gezien is) |
 | `puddle_photo` | zoals `puddle`, plus `photo` (bestand op de laptop) en `offset_cm` (afstand tussen het midden van de plas en recht onder de drone bij de foto) |
+| `path_done` | `id`, `reason` (einde van het pad, pad niet meer gezien, …), `helipad`, `puddles` |
 | `mission_done` / `mission_aborted` | `id`, `helipad` (waar de H gezien is, of `null`), `puddles` (lijst zoals bij `puddle`) |
 | `error` | `ref`, `error` |
 
 Plassen worden herkend door een getraind model, zie [Plassen herkennen](#plassen-herkennen-getraind-model).
+
+## Pad op de vloer herkennen en volgen
+
+De drone kan op twee manieren vliegen:
+
+* **Geplande route**: de waypoints die je plant (*Start missie*, of `mission` van de Jetson).
+* **Pad volgen**: een strook **tape of papier op de vloer** (*Volg pad op de vloer*, of
+  `follow_path` van de Jetson). Zet de drone op of vlak bij het begin van de strook, met de
+  neus de kant op die hij moet vliegen. Hij stijgt op, volgt de strook met `PATH_SPEED` en
+  stopt waar ze ophoudt (of als hij ze `PATH_LOST_S` seconden niet meer ziet), en landt
+  daar (of op een H die hij onderweg zag). Een plas onderweg onderbreekt het volgen voor de
+  foto, daarna zoekt hij de strook weer op.
+
+De herkenning (`drone/pathline.py`) zoekt in het beeld van de onderste camera de grootste
+lange, smalle vorm die duidelijk donkerder (`PATH_DARK = True`) of lichter is dan de vloer,
+`PATH_WIDTH_CM` breed en minstens `PATH_MIN_LENGTH_CM` lang (zo tellen de balken van de H en
+papieren plassen niet mee). Ze draait in **elke** vlucht: ook tijdens een geplande route wordt
+het pad dat de drone onder zich ziet op de grondkaart getekend (oranje), en in het
+camerabeeld staat de herkende strook als oranje lijn. Pas `PATH_*` in `drone/config.py` aan
+jullie strook aan (kleur, breedte). De simulator heeft een donkere tape-strook van 5 cm.
+
+Op de **grondkaart** kies je rechtsboven waarop de plassen geprojecteerd worden: het
+**herkende pad** (als er een is, anders de geplande route) of de **geplande route**.
 
 ## Hoe het werkt
 

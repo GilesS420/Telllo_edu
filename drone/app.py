@@ -29,6 +29,7 @@ from .downcam import DownCam, cm_per_pixel, pixel_to_world
 from .helipad import HelipadDetector, draw_helipad
 from .jetson_link import JetsonLink
 from .navigator import MissionAborted, PathFollower, Pose, validate_waypoints
+from .pathline import PathDetector, draw_path, to_body
 from .odometry import Odometry
 from .puddles import PuddleDetector, draw_puddles
 from .telemetry import Telemetry
@@ -58,6 +59,9 @@ class DroneApp:
         self.puddle_detector = PuddleDetector(on_new=self._puddle_found)
         self._photographing = False
         self.pads = []               # H sightings this mission: (t, x, y, size), newest last
+        self.path_detector = PathDetector()
+        self.path_obs = None         # (t, near, dir, ends, open ends) of the strip, drone frame cm
+        self.path_seen = []          # strip under the drone this frame: (t, x, y), for the GUI
         self._pad_ref = None         # (t, Helipad, size cm) last full view of the H (for find_center)
         self._pad_target = None      # (x, y) the landing on the H aims at right now
         self.frame_id = 0            # +1 on every new mission frame (the GUI clears its trail)
@@ -121,7 +125,8 @@ class DroneApp:
             self.commands.put({"type": "land", "_gen": self._gen})
         elif t == "ping":
             self.link.send({"type": "pong", "t": msg.get("t")})
-        elif t in ("mission", "takeoff", "set_pose", "helipad_land", "reset", "downvision"):
+        elif t in ("mission", "follow_path", "takeoff", "set_pose", "helipad_land", "reset",
+                   "downvision"):
             self.commands.put(dict(msg, _gen=self._gen))
         else:
             self.link.send({"type": "error", "ref": t, "error": "unknown message type"})
@@ -185,6 +190,8 @@ class DroneApp:
         t = cmd["type"]
         if t == "mission":
             self.run_mission(cmd)
+        elif t == "follow_path":
+            self.follow_path(cmd)
         elif t == "land":
             self.safe_land()
         elif t == "takeoff":
@@ -217,6 +224,7 @@ class DroneApp:
         self.frame_link = self.pose.get() if carry else None
         self.pose.reset()
         self.pads = []
+        self.path_seen = []
         self.puddle_detector.reset()
         if hasattr(self, "telemetry"):
             self.telemetry.terrain.reset()
@@ -395,6 +403,92 @@ class DroneApp:
                 self.safe_land(spot=waypoints[-1][:2])   # (still looks for an H there)
         except MissionAborted:
             self.safe_land()
+
+    def follow_path(self, msg):
+        """
+        Mission along the strip on the floor (path recognition) instead of
+        waypoints: take off, fly along the strip until it ends or is lost, land.
+        """
+        try:
+            speed = int(round(float(msg.get("speed", cfg.PATH_SPEED))))
+        except (TypeError, ValueError) as e:
+            raise CommandRejected(f"invalid follow_path: {e}")
+        if not 5 <= speed <= 50:
+            raise CommandRejected(f"speed {speed} outside 5-50 cm/s")
+        land_at_end = msg.get("land_at_end", cfg.LAND_AT_END)
+        self.mission_id = msg.get("id")
+        self.current_waypoints = []
+        self.waypoints_reached = 0
+        self._begin(msg)
+        self.pads = []
+        print(f"〰️  Pad volgen ({self.mission_id}) @ {speed} cm/s")
+        self.link.send({"type": "ack", "ref": "follow_path", "id": self.mission_id})
+        try:
+            self.takeoff()
+            x0, y0, z0, _ = self.pose.get()
+            reason = self._follow_strip(speed, bool(msg.get("reverse", False)))
+        except MissionAborted:
+            print("🛑 Pad volgen afgebroken")
+            self.link.send({"type": "mission_aborted", "id": self.mission_id,
+                            "helipad": self._helipad_msg(), "puddles": self._puddles_msg()})
+            self.safe_land()
+            return
+        finally:
+            self.follower.rc(0, 0, 0, 0)
+        print(f"🏁 Pad gevolgd: {reason}")
+        self.link.send({"type": "path_done", "id": self.mission_id, "reason": reason,
+                        "helipad": self._helipad_msg(), "puddles": self._puddles_msg()})
+        try:
+            if land_at_end and cfg.HELIPAD_LAND and self.seen_helipad() is not None:
+                self.land_on_seen_helipad((x0, y0, z0), cfg.DEFAULT_SPEED)
+            elif land_at_end:
+                self.safe_land()
+        except MissionAborted:
+            self.safe_land()
+
+    def _follow_strip(self, speed, reverse=False):
+        """Steer along the strip with rc (drone frame, no odometry needed). Returns why it stopped."""
+        f = self.follower
+        period = 1.0 / cfg.RC_HZ
+        start = time.time()
+        sdir = None
+        clamp = lambda v: int(max(-100, min(100, round(v))))
+        while True:
+            f._check_abort()
+            now = time.time()
+            if now - start > cfg.PATH_MAX_S:
+                return "tijdslimiet"
+            x, y, _, _ = self.pose.get()
+            g = cfg.GEOFENCE
+            if not (g["x"][0] <= x <= g["x"][1] and g["y"][0] <= y <= g["y"][1]):
+                return "rand van de geofence bereikt"
+            if self.puddle_detour():      # photo of a new puddle, then find the strip again
+                continue
+            obs = self.path_obs
+            if obs is None or now - obs[0] > cfg.PATH_LOST_S + cfg.FRAME_LATENCY_S:
+                f.rc(0, 0, 0, 0)
+                if sdir is None and now - start < 3 + cfg.PATH_LOST_S:
+                    time.sleep(period)    # just took off: give the camera a moment
+                    continue
+                return "geen pad onder de drone" if sdir is None else "pad niet meer gezien"
+            _, near, d, ends, open_ends = obs
+            if sdir is None:              # start along the strip the way the nose points
+                sign = 1 if (d[0] >= 0) != reverse else -1
+            else:                         # then keep going the same way
+                sign = 1 if d[0] * sdir[0] + d[1] * sdir[1] >= 0 else -1
+            sdir = (d[0] * sign, d[1] * sign)
+            ahead = ends[1] if sign > 0 else -ends[0]
+            open_ahead = open_ends[1] if sign > 0 else open_ends[0]
+            if not open_ahead and ahead < cfg.PATH_END_CM:
+                return "einde van het pad"
+            along = speed if open_ahead else min(speed, max(6.0, cfg.RC_GAIN * ahead))
+            a = near[0] * sdir[0] + near[1] * sdir[1]
+            side = (near[0] - a * sdir[0], near[1] - a * sdir[1])   # drone -> middle of the strip
+            vf = sdir[0] * along + side[0] * cfg.PATH_GAIN
+            vl = sdir[1] * along + side[1] * cfg.PATH_GAIN
+            yv = -cfg.RC_YAW_GAIN * f.yaw_error() if f.yaw_hold else 0
+            f.rc(clamp(-vl / cfg.RC_CMS_PER_UNIT), clamp(vf / cfg.RC_CMS_PER_UNIT), 0, clamp(yv))
+            time.sleep(period)
 
     def seen_helipad(self):
         """
@@ -743,6 +837,11 @@ class DroneApp:
         pad = (self.pad_detector.find(gray, height)
                if cfg.HELIPAD_LAND and self.downvision_enabled else None)
         h, w = gray.shape
+        line = None
+        if cfg.PATH_DETECT and self.downvision_enabled:
+            line = self.path_detector.find(gray, height or (pose[2] if self.airborne else None))
+            if line is not None and pad is not None and line.contains(pad.cx, pad.cy):
+                pad = None    # an 'H' in the tape of the path is no landing pad
         target = self._pad_target    # once: the landing thread can clear it meanwhile
         if pad is not None:
             self._pad_ref = (t_frame, pad, pad.size_px * cm_per_pixel(w, height) if height else None)
@@ -769,12 +868,26 @@ class DroneApp:
                 del self.pads[:-200]
         if self.airborne and self.downvision_enabled and height:
             self.ground_sample = (t_frame, self.frame_id, gray, height, pose)
+        if line is not None:
+            hh = height or pose[2]
+            near, d, ends = to_body(line, w, h, hh)
+            self.path_obs = (t_frame, near, d, ends, line.touches_border)
+            if self.airborne:
+                x, y, _, yaw = pose
+                a = math.radians(yaw)
+                wx = x + near[0] * math.cos(a) - near[1] * math.sin(a)
+                wy = y + near[0] * math.sin(a) + near[1] * math.cos(a)
+                seen = self.path_seen
+                if not seen or math.hypot(seen[-1][1] - wx, seen[-1][2] - wy) > 4:
+                    seen.append((t_frame, wx, wy))
+                    del seen[:-5000]
         # puddle model (own thread, also on the ground so you can test it by hand;
         # coordinates only in the air), only on the downward camera
         if self.downvision_enabled:
             self.puddle_detector.submit(gray, t_frame, height or pose[2], pose, self.airborne)
         vis = draw_helipad(cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR), pad)
         draw_puddles(vis, self.puddle_detector.latest_boxes(gray.shape))
+        draw_path(vis, line)
         with self._vis_lock:
             self._frame = frame.copy() if hasattr(frame, "copy") else frame
             self._vis = vis
